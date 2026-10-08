@@ -2,7 +2,9 @@
 import argparse
 import json
 import logging
+import os
 import sys
+import time
 
 from . import db, sync, vectors
 from .config import load_config
@@ -29,6 +31,13 @@ def main(argv=None):
     q.add_argument("query", nargs="+")
     e = sub.add_parser("embed", help="calcula los embeddings pendientes (búsqueda semántica)")
     e.add_argument("--max", type=int, help="máximo de artículos en esta ejecución")
+    ev = sub.add_parser("eval", help="mide la calidad de las respuestas con un conjunto de preguntas")
+    ev.add_argument("archivo", nargs="?", default="evals/general.json",
+                    help="conjunto de preguntas (por defecto evals/general.json)")
+    ev.add_argument("--limite", type=int, help="evaluar solo las primeras N preguntas")
+    ev.add_argument("--instrucciones", help="archivo de texto con otras instrucciones para el modelo")
+    ev.add_argument("--temperatura", type=float, help="temperatura del modelo de chat")
+    ev.add_argument("--salida", help="dónde guardar el detalle (por defecto data/evals/<fecha>.json)")
     sub.add_parser("stats", help="estado de la copia local")
     args = p.parse_args(argv)
 
@@ -47,6 +56,10 @@ def main(argv=None):
         return serve(cfg, auto_update=not args.no_update)
 
     conn = db.connect(cfg["db_path"])
+    if args.cmd in ("ask", "search", "embed", "eval"):
+        # Si setup dejó Ollama administrado, se inicia para este comando y se detiene al salir.
+        from .ollama_manager import ensure_running
+        ensure_running(cfg)
     if args.cmd == "sync":
         return 0 if sync.try_update(conn, cfg) else 1
     if args.cmd == "import-zim":
@@ -54,6 +67,16 @@ def main(argv=None):
         import_zim(conn, args.path, args.workers)
     elif args.cmd == "stats":
         print(json.dumps(db.stats(conn), ensure_ascii=False, indent=2))
+    elif args.cmd == "eval":
+        from . import evaluate
+        if args.instrucciones:
+            with open(args.instrucciones, encoding="utf-8") as f:
+                cfg["system_prompt"] = f.read().strip()
+        if args.temperatura is not None:
+            cfg["temperature"] = args.temperatura
+        out = args.salida or os.path.join(os.path.dirname(cfg["db_path"]) or ".", "evals",
+                                          time.strftime("%Y%m%d-%H%M%S") + ".json")
+        evaluate.run(conn, cfg, args.archivo, args.limite, out)
     elif args.cmd == "embed":
         if not vectors.enabled(cfg):
             raise SystemExit("Configura embed_model en config.json e instala numpy")

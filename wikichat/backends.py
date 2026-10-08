@@ -28,8 +28,10 @@ def _post(cfg, path, payload, timeout):
 def chat_stream(cfg, messages):
     """Genera la respuesta del modelo de chat, fragmento a fragmento."""
     if cfg["llm_backend"] == "openai":
-        resp = _post(cfg, "/chat/completions",
-                     {"model": cfg["chat_model"], "messages": messages, "stream": True}, 600)
+        payload = {"model": cfg["chat_model"], "messages": messages, "stream": True}
+        if cfg.get("temperature") is not None:
+            payload["temperature"] = cfg["temperature"]
+        resp = _post(cfg, "/chat/completions", payload, 600)
         with resp:
             for line in resp:
                 line = line.strip()
@@ -45,9 +47,11 @@ def chat_stream(cfg, messages):
     else:
         # think=False evita que modelos con razonamiento (qwen3, deepseek-r1…) lo mezclen
         # en la respuesta; los modelos sin razonamiento lo ignoran.
-        resp = _post(cfg, "/api/chat", {"model": cfg["chat_model"], "messages": messages,
-                                        "stream": True, "think": False,
-                                        "keep_alive": cfg["keep_alive"]}, 600)
+        payload = {"model": cfg["chat_model"], "messages": messages, "stream": True,
+                   "think": False, "keep_alive": cfg["keep_alive"]}
+        if cfg.get("temperature") is not None:
+            payload["options"] = {"temperature": cfg["temperature"]}
+        resp = _post(cfg, "/api/chat", payload, 600)
         with resp:
             for line in resp:
                 if not line.strip():

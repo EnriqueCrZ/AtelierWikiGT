@@ -18,6 +18,8 @@
   "chat_model": "qwen2.5:7b",
   "keep_alive": "2h",
   "top_k": 4,
+  "system_prompt": "",
+  "temperature": 0.2,
   "embed_model": "embeddinggemma",
   "embed_dims": 384,
   "embed_chars": 400,

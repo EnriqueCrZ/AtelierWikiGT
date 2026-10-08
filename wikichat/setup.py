@@ -105,7 +105,8 @@ def run(config_path="config.json", yes=False, benchmark=True):
         print(f"⚠️  Hay {hw['disk_free'] / GB:.0f} GB libres; para toda la Wikipedia conviene tener "
               f"al menos {MIN_FREE_DISK / GB:.0f} GB (más 38 GB si usas el .zim con imágenes).")
     profile = hardware.choose_profile(hw)
-    print(f"\nPerfil inicial: {'con GPU' if profile['name'] == 'gpu' else 'solo CPU'} · "
+    names = {"gpu": "con GPU", "cpu+gpu": "CPU con ayuda de una GPU pequeña", "cpu": "solo CPU"}
+    print(f"\nPerfil inicial: {names[profile['name']]} · "
           f"chat {profile['chat_model']} · embeddings {hardware.EMBED_MODEL[0]}")
 
     print("\n== Ollama ==")

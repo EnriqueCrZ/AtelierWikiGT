@@ -120,14 +120,15 @@ def choose_profile(hw):
         fits = [m for m, size in CHAT_MODELS if size + EMBED_MODEL[1] + 0.5 <= vram]
         return {"name": "gpu", "chat_model": fits[-1] if fits else "qwen2.5:3b",
                 "top_k": 6, "rewrite_followups": True, "embed_dims": 384}
-    # Solo CPU: el modelo debe caber en RAM dejando sitio al sistema, al índice y al servidor.
+    # Sin GPU grande: el modelo debe caber en RAM dejando sitio al sistema, al índice y al servidor.
     budget = ram - 3.0 - EMBED_MODEL[1] - 1.0
     fits = [m for m, size in CHAT_MODELS[:3] if size <= budget]
     chat = fits[-1] if fits else CHAT_MODELS[0][0]
-    if chat == "qwen2.5:7b" and hw["cores"] < 8:
-        chat = "qwen2.5:3b"  # con pocos núcleos un 7B tarda más de un minuto por respuesta
-    return {"name": "cpu", "chat_model": chat, "top_k": 4 if ram >= 8 else 3,
-            "rewrite_followups": False, "embed_dims": 384}
+    small_gpu = vram >= 3  # Ollama reparte el modelo entre la GPU y la CPU
+    if chat == "qwen2.5:7b" and hw["cores"] < 8 and not small_gpu:
+        chat = "qwen2.5:3b"  # con pocos núcleos y sin GPU un 7B tarda más de un minuto por respuesta
+    return {"name": "cpu+gpu" if small_gpu else "cpu", "chat_model": chat,
+            "top_k": 4 if ram >= 8 else 3, "rewrite_followups": False, "embed_dims": 384}
 
 
 def smaller_chat_model(name):

@@ -7,16 +7,28 @@ from .retrieval import search
 
 log = logging.getLogger("wikichat.llm")
 
-SYSTEM_PROMPT = """Eres un asistente que responde en español usando ÚNICAMENTE la información de
-los fragmentos de la wiki que se te proporcionan. Si la respuesta no está en los fragmentos,
-dilo claramente en lugar de inventar. Cita los artículos usados entre corchetes, por ejemplo
-[Ciudad de Guatemala]. Sé claro y conciso."""
+# Medido con `wikichat eval` (evals/quimica.json, qwen2.5:3b): frente a las instrucciones
+# anteriores deja de inventar, de hablar de "los fragmentos" y de copiar las cabeceras del
+# contexto, y cita el artículo en el 73 % de las respuestas en vez del 7 % (con temperatura 0,2).
+SYSTEM_PROMPT = """Eres un asistente que responde preguntas usando solo los textos de Wikipedia que se te dan.
+
+Cómo responder:
+1. Empieza con la respuesta directa a la pregunta en la primera oración.
+2. Usa únicamente datos que aparezcan en los textos. No agregues nada de tu propio conocimiento, aunque lo sepas.
+3. Ignora los textos que no tengan que ver con la pregunta.
+4. Si los textos no contienen la respuesta, responde exactamente: "No encontré esa información en la wiki." y nada más.
+5. Después de cada dato, escribe entre corchetes el artículo de donde sale, por ejemplo: El oro tiene número atómico 79 [Oro].
+6. No menciones los textos ni la wiki en la respuesta; responde como si lo supieras.
+7. Responde en español, en 2 a 4 oraciones, salvo que pidan más detalle."""
 
 
 def build_context(sources):
+    """Los textos recuperados, cada uno con su artículo de origen. Antes iban como
+    "[Título] (Sección)" y los modelos pequeños copiaban esa cabecera tal cual en la respuesta."""
     return "\n\n".join(
-        f"[{s['title']}] ({s['section']})\n{s['text']}" for s in sources
-    ) or "(no se encontraron fragmentos relevantes)"
+        f"Artículo: {s['title']}" + (f" (sección «{s['section']}»)" if s["section"] != "Introducción" else "")
+        + f"\n{s['text']}" for s in sources
+    ) or "(no se encontró ningún texto relacionado)"
 
 
 def retrieve(conn, cfg, query, index=None):
@@ -94,14 +106,17 @@ def retrieve_for(conn, cfg, messages, index=None, summary=None):
 def stream_answer(cfg, messages, sources, summary=None):
     """Genera la respuesta token a token. `messages` es el historial reciente más la pregunta
     actual; `summary`, el resumen de lo anterior. Sin modelo de chat, devuelve los fragmentos."""
-    system = SYSTEM_PROMPT
+    system = cfg.get("system_prompt") or SYSTEM_PROMPT
     if summary:
         system += f"\n\nResumen de la conversación anterior: {summary}"
     prompt_msgs = [
         {"role": "system", "content": system},
         *messages[:-1],
-        {"role": "user", "content": f"Fragmentos de la wiki:\n\n{build_context(sources)}\n\n"
-                                    f"Pregunta: {messages[-1]['content']}"},
+        # La pregunta va antes y después de los textos: a los modelos pequeños les cuesta
+        # recordar qué se preguntó después de leer varios párrafos.
+        {"role": "user", "content": f"Pregunta: {messages[-1]['content']}\n\n"
+                                    f"Textos de la wiki:\n\n{build_context(sources)}\n\n"
+                                    f"Responde a la pregunta: {messages[-1]['content']}"},
     ]
     try:
         yield from backends.chat_stream(cfg, prompt_msgs)

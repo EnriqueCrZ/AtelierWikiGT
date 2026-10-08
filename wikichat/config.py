@@ -25,6 +25,10 @@ DEFAULTS = {
     # los 5 minutos y la siguiente pregunta espera a que se vuelvan a cargar). "-1" = siempre.
     "keep_alive": "2h",
     "top_k": 4,
+    # Instrucciones del modelo de chat (vacío = las de llm.SYSTEM_PROMPT) y temperatura
+    # (None = la del modelo; más baja = más apegado a los textos; 0,2 fue lo mejor medido).
+    "system_prompt": "",
+    "temperature": 0.2,
     # Búsqueda semántica (vacío desactiva). Los prefijos dependen del modelo.
     "embed_model": "embeddinggemma",
     "embed_dims": 384,

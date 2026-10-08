@@ -1,0 +1,214 @@
+{
+  "descripcion": "Preguntas para la Wikipedia completa en español. Los títulos y datos esperados están verificados en la introducción de cada artículo (octubre de 2026).",
+  "preguntas": [
+    {
+      "pregunta": "¿En qué departamento de Guatemala está Tikal?",
+      "articulos": [
+        "Tikal"
+      ],
+      "datos": [
+        [
+          "peten"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué civilización construyó Tikal?",
+      "articulos": [
+        "Tikal"
+      ],
+      "datos": [
+        [
+          "maya"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué departamento se encuentra el lago de Atitlán?",
+      "articulos": [
+        "Lago de Atitlán"
+      ],
+      "datos": [
+        [
+          "solola"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es la capital de Guatemala?",
+      "articulos": [
+        "Ciudad de Guatemala",
+        "Guatemala"
+      ],
+      "datos": [
+        [
+          "ciudad de guatemala"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Desde cuándo Antigua Guatemala es Patrimonio de la Humanidad?",
+      "articulos": [
+        "Antigua Guatemala"
+      ],
+      "datos": [
+        [
+          "1979"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué año recibió Miguel Ángel Asturias el Premio Nobel?",
+      "articulos": [
+        "Miguel Ángel Asturias"
+      ],
+      "datos": [
+        [
+          "1967"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué premio recibió Rigoberta Menchú y en qué año?",
+      "articulos": [
+        "Rigoberta Menchú"
+      ],
+      "datos": [
+        [
+          "nobel"
+        ],
+        [
+          "1992"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué idioma se escribió originalmente el Popol Vuh?",
+      "articulos": [
+        "Popol Vuh"
+      ],
+      "datos": [
+        [
+          "k.iche",
+          "quiche"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cuándo se independizó Centroamérica de España?",
+      "articulos": [
+        "Independencia de Centroamérica"
+      ],
+      "datos": [
+        [
+          "1821"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cómo se llama la moneda de Guatemala?",
+      "articulos": [
+        "Quetzal (moneda)",
+        "Guatemala"
+      ],
+      "datos": [
+        [
+          "quetzal"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué ave aparece en la bandera de Guatemala y es su símbolo nacional?",
+      "articulos": [
+        "Pharomachrus mocinno",
+        "Bandera de Guatemala"
+      ],
+      "datos": [
+        [
+          "quetzal"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué departamento están las pozas de Semuc Champey?",
+      "articulos": [
+        "Semuc Champey"
+      ],
+      "datos": [
+        [
+          "alta verapaz"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Quién escribió Don Quijote de la Mancha?",
+      "articulos": [
+        "Don Quijote de la Mancha"
+      ],
+      "datos": [
+        [
+          "cervantes"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿A qué velocidad viaja la luz en el vacío?",
+      "articulos": [
+        "Velocidad de la luz"
+      ],
+      "datos": [
+        [
+          "299.?792"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué año llegó el ser humano a la Luna por primera vez?",
+      "articulos": [
+        "Apolo 11"
+      ],
+      "datos": [
+        [
+          "1969"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Quién pintó la Mona Lisa?",
+      "articulos": [
+        "La Gioconda"
+      ],
+      "datos": [
+        [
+          "leonardo"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿De qué país es capital París?",
+      "articulos": [
+        "París"
+      ],
+      "datos": [
+        [
+          "francia"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué número de la lotería va a salir mañana?",
+      "sin_respuesta": true,
+      "no_debe_decir": [
+        "\\b\\d{4,}\\b"
+      ]
+    },
+    {
+      "pregunta": "¿Cómo se llama mi perro?",
+      "sin_respuesta": true
+    },
+    {
+      "pregunta": "¿Qué cené anoche?",
+      "sin_respuesta": true
+    }
+  ]
+}

@@ -215,6 +215,7 @@ Otros comandos:
 | `llm_backend`, `llm_url`, `llm_api_key` | `ollama` o `openai` (servidor compatible) y su dirección. |
 | `keep_alive` | Cuánto tiempo mantiene Ollama los modelos en memoria sin uso (`"2h"` por defecto, `"-1"` = siempre). Por defecto Ollama los descarga a los 5 minutos y la siguiente pregunta espera a que se vuelvan a cargar, lo que en CPU puede tardar minutos. `serve` además los precarga al arrancar. |
 | `manage_ollama`, `ollama_dir` | Si `serve` debe iniciar y detener el Ollama que descargó `setup`, y dónde está. |
+| `system_prompt`, `temperature` | Instrucciones del modelo de chat (vacío = las de serie) y su temperatura (más baja = más apegado a los textos). Conviene medir cualquier cambio con `eval`. |
 | `chat_model`, `top_k` | Modelo de chat y cuántos fragmentos recibe como contexto (más = respuestas más completas pero más lentas en CPU). |
 | `embed_model` | Modelo de embeddings; vacío desactiva la búsqueda semántica. |
 | `embed_dims`, `embed_chars` | Dimensiones guardadas (RAM del índice) y caracteres de cada artículo que se vectorizan. |
@@ -240,6 +241,52 @@ Otros comandos:
    el título de un artículo ("¿Qué es el oro?" → Oro), su introducción va primero.
 5. Los mejores fragmentos van al modelo de chat con la instrucción de responder solo con ellos y
    citar los artículos; la interfaz muestra las fuentes y sus imágenes.
+
+## Medir la calidad de las respuestas
+
+`./wikichat.sh eval` hace una serie de preguntas con respuesta conocida y califica las
+respuestas con reglas fijas (sin usar otro modelo como juez), así se puede comparar si un cambio
+de modelo, de instrucciones o de ajustes mejora o empeora:
+
+```bash
+./wikichat.sh eval                                  # evals/general.json: Guatemala y cultura general
+./wikichat.sh eval evals/quimica.json --limite 5    # otro conjunto, solo las primeras 5
+./wikichat.sh eval --instrucciones mis_instrucciones.txt --temperatura 0.2
+```
+
+Mide, para cada pregunta:
+
+- **Acierto:** la respuesta contiene todos los datos esperados. En las preguntas que la wiki no
+  puede responder ("¿qué número saldrá en la lotería?"), acierta si dice que no encontró la
+  información.
+- **Búsqueda:** si el artículo correcto llegó al modelo (separa los fallos de búsqueda de los de
+  redacción).
+- **Inventa / se niega de más:** responder algo que no está en la wiki, o decir que no lo sabe
+  cuando el dato sí estaba.
+- **Estilo:** si cita los artículos, si habla de "los fragmentos" en vez de responder, y cuántas
+  palabras usa.
+
+Así se eligieron las instrucciones actuales, con `evals/quimica.json` (19 preguntas) y
+`qwen2.5:3b` en CPU:
+
+| | Antes | Ahora |
+|---|---|---|
+| Aciertos | 95 % | 95–100 % |
+| Inventó una respuesta (p. ej. la capital de Mongolia, que no está en esa wiki) | 1 | 0 |
+| Cita el artículo de origen | 7 % | 73 % |
+| Habla de "los fragmentos" en vez de responder | 32 % | 0 % |
+
+Los cambios: instrucciones explícitas (responder primero, solo con los textos, frase fija cuando
+no está la respuesta, citar entre corchetes, no hablar de los textos), los textos presentados
+como "Artículo: …" en vez de "[Título] (Sección)" (el modelo copiaba esa cabecera), la pregunta
+repetida antes y después de los textos, y temperatura 0,2. Con tan pocas preguntas, una de
+diferencia está dentro del ruido: la que oscila entre versiones falla porque la búsqueda le da al
+modelo una sección poco útil del artículo, no por las instrucciones.
+
+Los resultados se guardan en `data/evals/` con cada respuesta, para revisarlas. Las preguntas
+están en `evals/*.json` y es fácil agregar las tuyas: cada una lleva la pregunta, los artículos
+donde está la respuesta y los datos que deben aparecer (expresiones regulares, en minúsculas y
+sin acentos). Las preguntas cuyo artículo no está en tu copia se omiten.
 
 ## Pruebas
 

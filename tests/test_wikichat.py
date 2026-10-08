@@ -666,6 +666,10 @@ class HardwareTest(unittest.TestCase):
         self.assertEqual(hardware.choose_profile(hw_with(10, cores=8))["chat_model"], "qwen2.5:7b")
         big = hardware.choose_profile(hw_with(32, gpus=[{"vendor": "nvidia", "name": "x", "vram": 24 * GiB}]))
         self.assertEqual(big["chat_model"], "qwen2.5:14b")
+        # Una GPU de 4 GB no alcanza para el perfil GPU, pero ayuda: con 32 GB se prueba el 7B
+        # aunque haya pocos núcleos (la medición de setup decide si se queda).
+        small = hardware.choose_profile(hw_with(32, cores=6, gpus=[{"vendor": "nvidia", "name": "x", "vram": 4 * GiB}]))
+        self.assertEqual((small["name"], small["chat_model"]), ("cpu+gpu", "qwen2.5:7b"))
         # Una GPU Intel integrada (sin VRAM medida) no cuenta como GPU para los modelos.
         igpu = hardware.choose_profile(hw_with(16, gpus=[{"vendor": "intel", "name": "x", "vram": 0}]))
         self.assertEqual(igpu["name"], "cpu")
@@ -754,3 +758,45 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(FakeOllama.pulled, {"embeddinggemma", "qwen2.5:7b", "qwen2.5:3b"})
         self.assertFalse(cfg["rewrite_followups"])  # 400/40 + 30/10 = 13 s > 6 s
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "hardware.json")))
+
+
+class EvaluateTest(unittest.TestCase):
+    def test_refusal_detection(self):
+        from wikichat.evaluate import refused
+        for text in ("No encontré esa información en la wiki.", "Los fragmentos no mencionan quién ganó.",
+                     "Lo siento, no tengo información sobre eso.", "La información proporcionada no contiene ese dato."):
+            self.assertTrue(refused(text), text)
+        for text in ("El bronce es una aleación de cobre y estaño [Bronce].", "No es un metal noble, sino un gas."):
+            self.assertFalse(refused(text), text)
+
+    def test_scoring(self):
+        from wikichat.evaluate import score, summarize
+        item = {"pregunta": "¿De qué es el bronce?", "articulos": ["Bronce"], "datos": [["cobre"], ["estano"]]}
+        ok = score(item, "Es una aleación de cobre y estaño [Bronce].", ["Bronce"])
+        self.assertTrue(ok["acierto"] and ok["busqueda"] and ok["cita"])
+        half = score(item, "Es una aleación de cobre.", ["Latón"])
+        self.assertEqual((half["acierto"], half["datos"], half["busqueda"]), (False, "1/2", False))
+        lazy = score(item, "No encontré esa información en la wiki.", ["Bronce"])
+        self.assertTrue(lazy["se_niega_de_mas"])
+        trap = {"pregunta": "¿Quién ganó el Mundial?", "sin_respuesta": True}
+        invent = score(trap, "Lo ganó España.", [])
+        honest = score(trap, "No encontré esa información en la wiki.", [])
+        self.assertEqual((invent["acierto"], invent["inventa"], honest["acierto"]), (False, True, True))
+        for r in (ok, half, lazy, invent, honest):
+            r["total_s"] = 1.0
+        s = summarize([ok, half, lazy, invent, honest])
+        self.assertEqual((s["aciertos_pct"], s["con_respuesta_pct"], s["sin_respuesta_pct"], s["inventa"]),
+                         (40, 33, 50, 1))
+
+    def test_question_sets_are_valid(self):
+        import re as _re
+        for name in ("quimica.json", "general.json"):
+            with open(os.path.join(os.path.dirname(__file__), "..", "evals", name), encoding="utf-8") as f:
+                items = json.load(f)["preguntas"]
+            self.assertGreaterEqual(len(items), 15)
+            for item in items:
+                self.assertTrue(item.get("sin_respuesta") or item.get("datos"), item)
+                for group in item.get("datos", []):
+                    for pattern in group:
+                        _re.compile(pattern)
+                        self.assertEqual(pattern, pattern.lower(), "los patrones van sin mayúsculas ni acentos")

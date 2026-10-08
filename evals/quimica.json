@@ -1,0 +1,219 @@
+{
+  "descripcion": "Preguntas para probar con el .zim de química en español (wikipedia_es_chemistry). Cada dato esperado está verificado en el texto del artículo.",
+  "preguntas": [
+    {
+      "pregunta": "¿Cuál es el símbolo químico del oro?",
+      "articulos": [
+        "Oro"
+      ],
+      "datos": [
+        [
+          "\\bau\\b"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es el número atómico del hierro?",
+      "articulos": [
+        "Hierro"
+      ],
+      "datos": [
+        [
+          "\\b26\\b"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué número atómico tiene el cobre?",
+      "articulos": [
+        "Cobre"
+      ],
+      "datos": [
+        [
+          "\\b29\\b"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es el número atómico del sodio?",
+      "articulos": [
+        "Sodio"
+      ],
+      "datos": [
+        [
+          "\\b11\\b"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿De qué metales está hecho el bronce?",
+      "articulos": [
+        "Bronce"
+      ],
+      "datos": [
+        [
+          "cobre"
+        ],
+        [
+          "estano"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué es el latón?",
+      "articulos": [
+        "Latón"
+      ],
+      "datos": [
+        [
+          "cobre"
+        ],
+        [
+          "zinc",
+          "cinc"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Quién creó la primera tabla periódica?",
+      "articulos": [
+        "Tabla periódica de los elementos",
+        "Dmitri Mendeléyev"
+      ],
+      "datos": [
+        [
+          "mendel"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿De qué color se pone el papel tornasol con un ácido?",
+      "articulos": [
+        "Tornasol"
+      ],
+      "datos": [
+        [
+          "rojo"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cómo definió Arrhenius un ácido?",
+      "articulos": [
+        "Ácido",
+        "Teoría ácido-base"
+      ],
+      "datos": [
+        [
+          "proton",
+          "h\\+",
+          "hidrogeno",
+          "hidronio"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Por qué se deterioran los metales con el tiempo?",
+      "articulos": [
+        "Corrosión"
+      ],
+      "datos": [
+        [
+          "oxid",
+          "corrosion"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿En qué se diferencian los isótopos de un mismo elemento?",
+      "articulos": [
+        "Isótopo"
+      ],
+      "datos": [
+        [
+          "neutron"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es el elemento más abundante del universo?",
+      "articulos": [
+        "Hidrógeno"
+      ],
+      "datos": [
+        [
+          "hidrogeno"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué mide el pH?",
+      "articulos": [
+        "PH"
+      ],
+      "datos": [
+        [
+          "acidez",
+          "alcalinidad",
+          "basicidad",
+          "h\\+",
+          "h⁺",
+          "hidrogeno",
+          "hidronio"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Quién descubrió el oxígeno?",
+      "articulos": [
+        "Oxígeno"
+      ],
+      "datos": [
+        [
+          "priestley",
+          "scheele",
+          "lavoisier"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Qué metal es líquido a temperatura ambiente?",
+      "articulos": [
+        "Mercurio (elemento)"
+      ],
+      "datos": [
+        [
+          "mercurio"
+        ]
+      ]
+    },
+    {
+      "pregunta": "¿Quién ganó el Mundial de fútbol de 2010?",
+      "sin_respuesta": true,
+      "no_debe_decir": [
+        "espana",
+        "holanda",
+        "paises bajos"
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es la capital de Mongolia?",
+      "sin_respuesta": true,
+      "no_debe_decir": [
+        "ulan",
+        "ulaanbaatar"
+      ]
+    },
+    {
+      "pregunta": "¿Cuántos goles marcó Messi en 2012?",
+      "sin_respuesta": true,
+      "no_debe_decir": [
+        "\\b\\d{2} goles"
+      ]
+    },
+    {
+      "pregunta": "¿Cuál es el pronóstico del tiempo para mañana en Madrid?",
+      "sin_respuesta": true
+    }
+  ]
+}
