@@ -9,6 +9,7 @@ DEFAULTS = {
     "category_depth": 1,
     "seed_titles": [],
     "track_all_changes": False,
+    "skip_bot_edits": True,
     "update_interval_hours": 12,
     "request_delay_seconds": 0.5,
     "ollama_url": "http://localhost:11434",

@@ -28,18 +28,28 @@ def keywords(text):
     return out
 
 
+def _fts_query(terms, op):
+    # Prefijos (term*) para tolerar plurales y conjugaciones simples.
+    return f" {op} ".join(f'"{t}"*' if len(t) > 4 else f'"{t}"' for t in terms)
+
+
 def search(conn, query, k=6):
     """Devuelve [{title, section, text, score}] ordenados por relevancia."""
     terms = keywords(query)
     if not terms:
         return []
-    # Prefijos (term*) para tolerar plurales y conjugaciones simples.
-    fts = " OR ".join(f'"{t}"*' if len(t) > 3 else f'"{t}"' for t in terms)
-    rows = conn.execute(
-        """SELECT title, section, text, bm25(chunks, 8.0, 3.0, 1.0) AS score
-           FROM chunks WHERE chunks MATCH ? ORDER BY score LIMIT ?""",
-        (fts, k * 3),
-    ).fetchall()
+    # Primero exige todas las palabras (rápido y preciso incluso con millones de
+    # fragmentos); si no alcanza, acepta cualquiera de ellas.
+    rows = []
+    for op in ("AND", "OR") if len(terms) > 1 else ("AND",):
+        rows = conn.execute(
+            """SELECT c.title, c.section, c.text, bm25(chunks_fts, 8.0, 3.0, 1.0) AS score
+               FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
+               WHERE chunks_fts MATCH ? ORDER BY score LIMIT ?""",
+            (_fts_query(terms, op), k * 3),
+        ).fetchall()
+        if len(rows) >= k:
+            break
     # Evita que un solo artículo acapare todos los resultados.
     per_title, results = {}, []
     for title, section, text, score in rows:

@@ -3,13 +3,14 @@
   "user_agent": "AtelierWikiGT/0.1 (https://github.com/EnriqueCrZ/AtelierWikiGT)",
   "db_path": "data/wiki.db",
 
-  "seed_categories": ["Guatemala"],
-  "category_depth": 2,
-  "seed_titles": ["Guatemala", "Ciudad de Guatemala", "Antigua Guatemala"],
-  "track_all_changes": false,
+  "track_all_changes": true,
+  "skip_bot_edits": true,
+  "seed_categories": [],
+  "category_depth": 1,
+  "seed_titles": [],
 
-  "update_interval_hours": 12,
-  "request_delay_seconds": 0.5,
+  "update_interval_hours": 6,
+  "request_delay_seconds": 0.2,
 
   "ollama_url": "http://localhost:11434",
   "chat_model": "qwen2.5:7b",

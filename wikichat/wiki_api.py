@@ -1,9 +1,13 @@
 """Cliente mínimo de la API de MediaWiki (solo librería estándar)."""
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+log = logging.getLogger("wikichat.api")
 
 
 class WikiUnavailable(Exception):
@@ -28,7 +32,9 @@ class WikiClient:
                     data = json.load(resp)
             except urllib.error.HTTPError as e:
                 if e.code in (429, 503) and attempt < 3:
-                    time.sleep(int(e.headers.get("Retry-After") or 5 * 2**attempt))
+                    wait = int(e.headers.get("Retry-After") or 5 * 2**attempt)
+                    log.warning("La wiki pide esperar (HTTP %d); reintento en %d s", e.code, wait)
+                    time.sleep(wait)
                     continue
                 raise WikiUnavailable(f"HTTP {e.code}") from e
             except (urllib.error.URLError, OSError, ValueError) as e:
@@ -71,36 +77,61 @@ class WikiClient:
                         pending.append((m["title"], level + 1))
         return titles
 
-    def page_text(self, title=None, pageid=None):
-        """Devuelve (pageid, title, revid, texto plano) o None si no existe."""
-        key = {"pageids": str(pageid)} if pageid else {"titles": title}
+    def page_text(self, title):
+        """Devuelve (título, revid, texto plano) o None si no existe.
+
+        Si el título es una redirección, devuelve el artículo de destino.
+        """
         data = self.get(
             action="query", prop="extracts|info", explaintext="1",
-            exsectionformat="wiki", redirects="1", **key,
+            exsectionformat="wiki", redirects="1", titles=title,
         )
         pages = data.get("query", {}).get("pages", [])
         if not pages or pages[0].get("missing") or "extract" not in pages[0]:
             return None
         p = pages[0]
-        return p["pageid"], p["title"], p.get("lastrevid"), p["extract"]
+        return p["title"], p.get("lastrevid"), p["extract"]
 
-    def latest_revids(self, pageids):
-        """{pageid: lastrevid} para lotes de 50; None si la página ya no existe."""
+    def latest_revisions(self, titles):
+        """{título: (revid, timestamp ISO)} en lotes de 50; None si ya no existe o es redirección."""
         result = {}
-        ids = list(pageids)
-        for i in range(0, len(ids), 50):
-            batch = ids[i:i + 50]
-            data = self.get(action="query", prop="info", pageids="|".join(map(str, batch)))
-            for p in data.get("query", {}).get("pages", []):
-                result[p["pageid"]] = None if p.get("missing") else p.get("lastrevid")
+        titles = list(titles)
+        for i in range(0, len(titles), 50):
+            batch = titles[i:i + 50]
+            data = self.get(
+                action="query", prop="revisions|info", rvprop="ids|timestamp",
+                titles="|".join(batch),
+            ).get("query", {})
+            original = {n["to"]: n["from"] for n in data.get("normalized", [])}
+            for p in data.get("pages", []):
+                title = original.get(p["title"], p["title"])
+                if p.get("missing") or p.get("invalid") or p.get("redirect"):
+                    result[title] = None
+                else:
+                    rev = p["revisions"][0]
+                    result[title] = (rev["revid"], rev["timestamp"])
         return result
 
-    def recent_changes(self, since_iso):
-        """Títulos de artículos editados/creados desde 'since_iso' (máx. ~30 días)."""
-        titles = set()
-        for q in self.query_all(
-            list="recentchanges", rcstart=since_iso, rcdir="newer",
-            rcnamespace="0", rctype="edit|new", rcprop="title", rclimit="500",
-        ):
-            titles.update(c["title"] for c in q.get("recentchanges", []))
-        return titles
+    def recent_changes(self, since_iso, skip_bots=True):
+        """Cambios en artículos desde 'since_iso' (la wiki guarda ~30 días), del más viejo al
+        más nuevo. Produce (timestamp, tipo, título, destino) con tipo edit, delete o move."""
+        params = dict(
+            list="recentchanges", rcstart=since_iso, rcdir="newer", rcnamespace="0",
+            rctype="edit|new|log", rcprop="title|timestamp|loginfo", rclimit="500",
+        )
+        if skip_bots:
+            params["rcshow"] = "!bot"
+        for q in self.query_all(**params):
+            for c in q.get("recentchanges", []):
+                kind, target = "edit", None
+                if c.get("type") == "log":
+                    if c.get("logtype") == "delete" and c.get("logaction") == "delete":
+                        kind = "delete"
+                    elif c.get("logtype") == "move":
+                        kind = "move"
+                        params = c.get("logparams", {})
+                        if params.get("target_ns") == 0:
+                            target = params.get("target_title")
+                    elif not (c.get("logtype") == "delete" and c.get("logaction") == "restore"):
+                        continue
+                yield c["timestamp"], kind, c["title"], target
