@@ -32,7 +32,7 @@ registra un aviso y todo sigue funcionando con la copia local.
 ### Actualizar sin Internet: importar un .zim más nuevo
 
 En un equipo que pasa mucho tiempo sin conexión, basta con llevarle un `.zim` más reciente e
-importarlo encima de la copia existente (`python -m wikichat import-zim <nuevo>.zim`). No se
+importarlo encima de la copia existente (`./wikichat.sh import-zim <nuevo>.zim`). No se
 rehace todo: cada artículo se compara con la copia local por una huella de su texto.
 
 | Caso | Qué pasa | ¿Recalcula su vector? |
@@ -52,7 +52,16 @@ Las conversaciones guardadas no se tocan.
 
 ## ¿Qué necesito instalar?
 
-Solo Python 3.10+ en Linux. El resto lo prepara `python -m wikichat setup`:
+Solo Python 3.10+ en Linux. `./install.sh` crea un entorno virtual (`.venv`) dentro del proyecto
+e instala ahí las librerías, sin tocar el Python del sistema. Es necesario porque en Ubuntu 23.04+,
+Debian 12+ y otras distribuciones `pip install` directo falla con *externally-managed-environment*
+(PEP 668). Si `install.sh` dice que falta `venv`, instálalo con `sudo apt install python3-venv`
+(o `python3.X-venv` según tu versión) y repítelo.
+
+`./wikichat.sh` ejecuta el programa con ese entorno. Si prefieres, actívalo con
+`source .venv/bin/activate` y usa `python -m wikichat` en su lugar.
+
+El resto lo prepara `./wikichat.sh setup`:
 
 1. **Detecta el hardware:** CPU y sus instrucciones (AVX2/AVX-512), RAM, GPU NVIDIA (`nvidia-smi`)
    o AMD (`rocm-smi`) con su memoria, y disco libre.
@@ -118,7 +127,7 @@ coló en la respuesta durante las pruebas, así que se recomienda qwen2.5 o una 
 **Vectorizar toda la Wikipedia toma tiempo** (días en CPU, horas con GPU), pero no hay que
 esperar: se hace en segundo plano, de los artículos más extensos a los más cortos, la búsqueda
 semántica mejora a medida que avanza y se pausa sola mientras alguien usa el chat para no
-quitarle velocidad. También se puede adelantar con `python -m wikichat embed`.
+quitarle velocidad. También se puede adelantar con `./wikichat.sh embed`.
 
 ## Imágenes
 
@@ -161,20 +170,20 @@ Cómo se mantiene el contexto sin que el modelo reciba la conversación entera:
 ## Puesta en marcha
 
 ```bash
-pip install -r requirements.txt
-cp config.example.json config.json
+# 0. Instala las dependencias en un entorno virtual propio (.venv) y crea config.json:
+./install.sh
 
 # 1. Prepara Ollama y los modelos para este equipo (pregunta antes de descargar; -y para no preguntar):
-python -m wikichat setup
+./wikichat.sh setup
 
 # 2. Descarga el .zim más reciente desde https://download.kiwix.org/zim/wikipedia/
 #    (maxi si quieres imágenes, nopic si no) e impórtalo
 #    (estimado 1–2 h con 4 núcleos para nopic; si se interrumpe, repite el comando):
-python -m wikichat import-zim wikipedia_es_all_maxi_2026-05.zim
+./wikichat.sh import-zim wikipedia_es_all_maxi_2026-05.zim
 
 # 3. Inicia el chat: arranca Ollama, se actualiza por Internet si hay conexión y vectoriza
 #    en segundo plano.
-python -m wikichat serve        # http://127.0.0.1:8800
+./wikichat.sh serve        # http://127.0.0.1:8800
 ```
 
 La primera actualización tras importar un `.zim` de más de un mes hace la **puesta al día**:
@@ -185,12 +194,12 @@ Cuanto más reciente sea el `.zim`, menos trabajo.
 Otros comandos:
 
 ```bash
-python -m wikichat sync                    # actualizar ahora (útil con cron / Programador de tareas)
-python -m wikichat embed [--max N]         # adelantar la vectorización
-python -m wikichat ask "¿Cuándo se fundó Antigua Guatemala?"
-python -m wikichat search lago atitlan     # búsqueda sin LLM
-python -m wikichat stats
-python -m wikichat serve --no-update       # sin conexión a Wikipedia
+./wikichat.sh sync                    # actualizar ahora (útil con cron / Programador de tareas)
+./wikichat.sh embed [--max N]         # adelantar la vectorización
+./wikichat.sh ask "¿Cuándo se fundó Antigua Guatemala?"
+./wikichat.sh search lago atitlan     # búsqueda sin LLM
+./wikichat.sh stats
+./wikichat.sh serve --no-update       # sin conexión a Wikipedia
 ```
 
 ## Configuración (`config.json`)
@@ -233,7 +242,7 @@ python -m wikichat serve --no-update       # sin conexión a Wikipedia
 ## Pruebas
 
 ```bash
-python -m unittest -v      # no necesita modelos; la prueba del importador se omite sin libzim
+.venv/bin/python -m unittest -v      # no necesita modelos; la prueba del importador se omite sin libzim
 ```
 
 ## Límites conocidos
