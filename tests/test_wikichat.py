@@ -321,6 +321,40 @@ class BackendsTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_preload_and_loaded_check(self):
+        loaded = {"models": []}
+
+        class Ps(FakeModelServer):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(loaded).encode())
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                assert body["keep_alive"] == "2h"
+                if self.path == "/api/chat" and body["messages"] == []:
+                    loaded["models"].append({"name": body["model"]})
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({"embeddings": [[1.0] for _ in body["input"]]}).encode())
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Ps)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            cfg = dict(DEFAULTS, llm_url=f"http://127.0.0.1:{httpd.server_port}", chat_model="qwen2.5:3b")
+            self.assertFalse(backends.chat_model_loaded(cfg))
+            backends.preload(cfg)
+            self.assertTrue(backends.chat_model_loaded(cfg))
+            self.assertIsNone(backends.chat_model_loaded(dict(cfg, llm_backend="openai")))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_unreachable_backend_raises_clear_error(self):
         cfg = dict(DEFAULTS, llm_url="http://127.0.0.1:9")
         with self.assertRaises(backends.BackendUnavailable):

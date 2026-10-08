@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tarfile
 import time
@@ -82,22 +83,74 @@ def install(ollama_dir, arch, gpus, progress=print):
     return binary
 
 
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, TypeError):
+        return False
+
+
+def _stop_group(pid, wait=10):
+    """Detiene un Ollama y los `llama-server` que lanzó (comparten grupo de procesos)."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        deadline = time.time() + wait
+        while time.time() < deadline and _alive(pid):
+            time.sleep(0.2)
+            try:
+                os.waitpid(pid, os.WNOHANG)  # recoge al proceso si es hijo nuestro
+            except ChildProcessError:
+                pass
+        if not _alive(pid):
+            return
+
+
 class ManagedOllama:
-    """Arranca y detiene un `ollama serve` propio."""
+    """Arranca y detiene un `ollama serve` propio.
+
+    Guarda en ollama.pid el proceso de Ollama y el del chat que lo inició. Si el chat se
+    cerró de golpe y Ollama quedó huérfano, el siguiente `serve` lo adopta y lo detiene al
+    salir; si el chat que lo inició sigue abierto, lo comparte sin detenerlo.
+    """
 
     def __init__(self, binary, ollama_dir, port=MANAGED_PORT):
         self.binary, self.dir, self.port = binary, ollama_dir, port
         self.url = f"http://127.0.0.1:{port}"
+        self.pidfile = os.path.join(ollama_dir, "ollama.pid")
         self.proc = None
+        self.owned_pid = None
+
+    def _read_pidfile(self):
+        try:
+            with open(self.pidfile) as f:
+                ollama_pid, owner_pid = (int(x) for x in f.read().split())
+            return ollama_pid, owner_pid
+        except (OSError, ValueError):
+            return None, None
+
+    def _write_pidfile(self, ollama_pid):
+        with open(self.pidfile, "w") as f:
+            f.write(f"{ollama_pid} {os.getpid()}")
 
     def start(self, wait=60):
         if version(self.url):
-            return self.url  # ya estaba corriendo (p. ej. otro `serve`)
+            ollama_pid, owner_pid = self._read_pidfile()
+            if ollama_pid and _alive(ollama_pid) and not _alive(owner_pid):
+                self.owned_pid = ollama_pid  # huérfano de un `serve` anterior: lo adoptamos
+                self._write_pidfile(ollama_pid)
+                atexit.register(self.stop)
+            return self.url
         env = dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{self.port}",
                    OLLAMA_MODELS=os.path.join(self.dir, "models"))
         log_file = open(os.path.join(self.dir, "serve.log"), "ab")
         self.proc = subprocess.Popen([self.binary, "serve"], env=env, stdout=log_file,
                                      stderr=subprocess.STDOUT, start_new_session=True)
+        self.owned_pid = self.proc.pid
+        self._write_pidfile(self.proc.pid)
         atexit.register(self.stop)
         deadline = time.time() + wait
         while time.time() < deadline:
@@ -106,16 +159,19 @@ class ManagedOllama:
             if self.proc.poll() is not None:
                 break
             time.sleep(0.5)
+        self.stop()
         raise RuntimeError(f"Ollama no arrancó; revisa {os.path.join(self.dir, 'serve.log')}")
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        if self.owned_pid:
+            _stop_group(self.owned_pid)
+            if self._read_pidfile()[0] == self.owned_pid:
+                try:
+                    os.remove(self.pidfile)
+                except OSError:
+                    pass
         self.proc = None
+        self.owned_pid = None
 
 
 def has_model(url, name):

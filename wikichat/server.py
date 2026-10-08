@@ -39,6 +39,14 @@ def start_background(cfg, index, auto_update=True, activity=None):
     calcula los embeddings que falten. Cualquier fallo se registra y se ignora."""
     stop = threading.Event()
 
+    def warm_up():
+        try:
+            t = time.time()
+            backends.preload(cfg)
+            log.info("Modelos cargados en memoria (%.0f s)", time.time() - t)
+        except backends.BackendUnavailable as e:
+            log.warning("No se pudieron precargar los modelos: %s", e)
+
     def loop():
         conn = db.connect(cfg["db_path"])
         if index is not None:
@@ -62,6 +70,7 @@ def start_background(cfg, index, auto_update=True, activity=None):
                 break
             stop.wait(cfg["update_interval_hours"] * 3600)
 
+    threading.Thread(target=warm_up, daemon=True, name="precarga").start()
     threading.Thread(target=loop, daemon=True, name="background").start()
     return stop
 
@@ -222,7 +231,8 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
             try:
                 if chat_id:
                     send({"type": "chat", "id": chat_id, "title": store.get(chat_id)["title"]})
-                send({"type": "sources", "sources": brief, "images": pics, "query": query})
+                send({"type": "sources", "sources": brief, "images": pics, "query": query,
+                      "model_loaded": backends.chat_model_loaded(cfg)})
                 for text in stream_answer(cfg, messages, sources, summary):
                     answer.append(text)
                     send({"type": "token", "text": text})
@@ -236,7 +246,22 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
     return Handler
 
 
+def _exit_on_signals():
+    """Que `kill` (SIGTERM) o cerrar la terminal (SIGHUP) cierren igual que Ctrl+C, para
+    detener ordenadamente el Ollama administrado en vez de dejarlo huérfano."""
+    import signal
+
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+    # Lanzado en segundo plano desde un script, Ctrl+C llega ignorado: se restablece.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
 def serve(cfg, auto_update=True):
+    _exit_on_signals()
     from . import ollama_manager
     manager = ollama_manager.ensure_running(cfg)  # solo si setup dejó Ollama administrado
     db_lock = threading.Lock()

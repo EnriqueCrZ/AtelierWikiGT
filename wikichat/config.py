@@ -21,6 +21,9 @@ DEFAULTS = {
     "manage_ollama": False,
     "ollama_dir": "data/ollama",
     "chat_model": "qwen2.5:7b",
+    # Cuánto tiempo mantiene Ollama los modelos en memoria sin uso (por defecto los descarga a
+    # los 5 minutos y la siguiente pregunta espera a que se vuelvan a cargar). "-1" = siempre.
+    "keep_alive": "2h",
     "top_k": 4,
     # Búsqueda semántica (vacío desactiva). Los prefijos dependen del modelo.
     "embed_model": "embeddinggemma",

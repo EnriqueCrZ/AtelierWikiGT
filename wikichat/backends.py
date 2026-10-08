@@ -46,7 +46,8 @@ def chat_stream(cfg, messages):
         # think=False evita que modelos con razonamiento (qwen3, deepseek-r1…) lo mezclen
         # en la respuesta; los modelos sin razonamiento lo ignoran.
         resp = _post(cfg, "/api/chat", {"model": cfg["chat_model"], "messages": messages,
-                                        "stream": True, "think": False}, 600)
+                                        "stream": True, "think": False,
+                                        "keep_alive": cfg["keep_alive"]}, 600)
         with resp:
             for line in resp:
                 if not line.strip():
@@ -67,6 +68,32 @@ def embed(cfg, texts):
         with _post(cfg, "/embeddings", {"model": cfg["embed_model"], "input": texts}, 300) as r:
             data = json.load(r)["data"]
         return [d["embedding"] for d in sorted(data, key=lambda d: d["index"])]
-    with _post(cfg, "/api/embed",
-               {"model": cfg["embed_model"], "input": texts, "truncate": True}, 300) as r:
+    with _post(cfg, "/api/embed", {"model": cfg["embed_model"], "input": texts, "truncate": True,
+                                   "keep_alive": cfg["keep_alive"]}, 300) as r:
         return json.load(r)["embeddings"]
+
+
+def chat_model_loaded(cfg):
+    """True/False si el modelo de chat ya está en memoria (solo Ollama); None si no se sabe."""
+    if cfg["llm_backend"] != "ollama":
+        return None
+    try:
+        with urllib.request.urlopen(cfg["llm_url"].rstrip("/") + "/api/ps", timeout=2) as r:
+            names = {m.get("name") for m in json.load(r).get("models", [])}
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    model = cfg["chat_model"]
+    return model in names or f"{model}:latest" in names
+
+
+def preload(cfg):
+    """Carga los modelos en memoria de antemano (solo Ollama), para que la primera pregunta
+    no espere a que se lean del disco: en CPU eso puede tardar minutos."""
+    if cfg["llm_backend"] != "ollama":
+        return
+    if cfg.get("embed_model"):
+        embed(cfg, ["precarga"])
+    # Un chat sin mensajes solo carga el modelo, sin generar nada.
+    with _post(cfg, "/api/chat", {"model": cfg["chat_model"], "messages": [],
+                                  "keep_alive": cfg["keep_alive"]}, 900) as r:
+        r.read()

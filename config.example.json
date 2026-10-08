@@ -16,6 +16,7 @@
   "manage_ollama": false,
   "ollama_dir": "data/ollama",
   "chat_model": "qwen2.5:7b",
+  "keep_alive": "2h",
   "top_k": 4,
   "embed_model": "embeddinggemma",
   "embed_dims": 384,

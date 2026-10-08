@@ -213,6 +213,7 @@ Otros comandos:
 | `seed_categories`, `category_depth`, `seed_titles` | Para copiar solo un tema en vez de toda la wiki (con `track_all_changes: false`, sin `.zim`). |
 | `update_interval_hours`, `request_delay_seconds` | Frecuencia de actualización y pausa entre peticiones a Wikipedia. |
 | `llm_backend`, `llm_url`, `llm_api_key` | `ollama` o `openai` (servidor compatible) y su dirección. |
+| `keep_alive` | Cuánto tiempo mantiene Ollama los modelos en memoria sin uso (`"2h"` por defecto, `"-1"` = siempre). Por defecto Ollama los descarga a los 5 minutos y la siguiente pregunta espera a que se vuelvan a cargar, lo que en CPU puede tardar minutos. `serve` además los precarga al arrancar. |
 | `manage_ollama`, `ollama_dir` | Si `serve` debe iniciar y detener el Ollama que descargó `setup`, y dónde está. |
 | `chat_model`, `top_k` | Modelo de chat y cuántos fragmentos recibe como contexto (más = respuestas más completas pero más lentas en CPU). |
 | `embed_model` | Modelo de embeddings; vacío desactiva la búsqueda semántica. |
