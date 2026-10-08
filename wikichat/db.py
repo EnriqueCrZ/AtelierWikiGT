@@ -4,6 +4,7 @@ Pensado para millones de artículos: los fragmentos viven en una tabla normal
 indexada por página y FTS5 los indexa como "external content", así borrar o
 reemplazar un artículo no requiere recorrer todo el índice.
 """
+import hashlib
 import os
 import re
 import sqlite3
@@ -15,7 +16,9 @@ CREATE TABLE IF NOT EXISTS pages (
     title TEXT UNIQUE NOT NULL,
     revid INTEGER,          -- NULL si viene de un .zim (no trae número de revisión)
     snapshot_ts REAL,       -- fecha del contenido guardado (fecha del .zim o de descarga)
-    size INTEGER            -- largo del texto; los artículos largos se vectorizan primero
+    size INTEGER,           -- largo del texto; los artículos largos se vectorizan primero
+    hash TEXT,              -- huella del texto: al importar otro .zim, si no cambió se conserva
+    gen INTEGER             -- en qué importación de .zim se vio por última vez
 );
 CREATE INDEX IF NOT EXISTS pages_size ON pages(size DESC);
 CREATE TABLE IF NOT EXISTS chunks (
@@ -66,13 +69,27 @@ SKIP_SECTIONS = {
 }
 
 
+# Columnas añadidas después de la primera versión: se agregan a bases ya existentes.
+MIGRATIONS = {"pages": {"size": "INTEGER", "hash": "TEXT", "gen": "INTEGER"}}
+
+
 def connect(path):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False, timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    for table, columns in MIGRATIONS.items():
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone()
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, kind in columns.items():
+            if exists and col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
     conn.executescript(SCHEMA)
     return conn
+
+
+def text_hash(text):
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=12).hexdigest()
 
 
 def get_meta(conn, key, default=None):
@@ -137,7 +154,8 @@ def delete_page(conn, title, commit=True):
         conn.commit()
 
 
-def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=True):
+def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=True,
+                gen=None, hash=None):
     """Guarda o reemplaza un artículo.
 
     images: lista de (src, pie de foto). None conserva las imágenes que ya tenía
@@ -145,10 +163,13 @@ def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=
     """
     old = page_id(conn, title)
     if old is not None:
+        if gen is None:
+            row = conn.execute("SELECT gen FROM pages WHERE id=?", (old,)).fetchone()
+            gen = row[0] if row else None
         _remove(conn, old, keep_images=images is None)
     cur = conn.execute(
-        "INSERT INTO pages (title, revid, snapshot_ts, size) VALUES (?, ?, ?, ?)",
-        (title, revid, snapshot_ts or time.time(), len(text)),
+        "INSERT INTO pages (title, revid, snapshot_ts, size, hash, gen) VALUES (?, ?, ?, ?, ?, ?)",
+        (title, revid, snapshot_ts or time.time(), len(text), hash or text_hash(text), gen),
     )
     new = cur.lastrowid
     conn.executemany(
@@ -168,6 +189,20 @@ def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=
     return new
 
 
+def set_images(conn, page_id, images):
+    """Reemplaza las imágenes del .zim de un artículo sin tocar su texto ni su vector.
+
+    Con imágenes nuevas, sustituye todas. Sin ellas (p. ej. un .zim sin fotos), quita solo
+    las que apuntaban al .zim anterior y conserva las descargadas de internet.
+    """
+    if images:
+        conn.execute("DELETE FROM images WHERE page=?", (page_id,))
+        conn.executemany("INSERT INTO images (page, src, caption) VALUES (?, ?, ?)",
+                         [(page_id, src, caption) for src, caption in images])
+    else:
+        conn.execute("DELETE FROM images WHERE page=? AND src LIKE 'zim:%'", (page_id,))
+
+
 def has_page(conn, title):
     return conn.execute("SELECT 1 FROM pages WHERE title=?", (title,)).fetchone() is not None
 
@@ -184,6 +219,7 @@ def stats(conn):
         "chunks_approx": chunks,
         "last_sync": get_meta(conn, "last_sync"),
         "zim_source": get_meta(conn, "zim_name"),
+        "zim_date": get_meta(conn, "zim_date"),
         "catchup_pending": get_meta(conn, "check_after") is not None,
         "embedded_pages": conn.execute("SELECT COUNT(*) FROM page_vectors").fetchone()[0],
         "images": conn.execute("SELECT MAX(id) FROM images").fetchone()[0] or 0,

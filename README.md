@@ -29,6 +29,27 @@ El `.zim` se usa **una sola vez** como punto de partida. Después, el sistema el
 **Si la actualización falla** (sin Internet, Wikipedia limita las peticiones, etc.) se
 registra un aviso y todo sigue funcionando con la copia local.
 
+### Actualizar sin Internet: importar un .zim más nuevo
+
+En un equipo que pasa mucho tiempo sin conexión, basta con llevarle un `.zim` más reciente e
+importarlo encima de la copia existente (`python -m wikichat import-zim <nuevo>.zim`). No se
+rehace todo: cada artículo se compara con la copia local por una huella de su texto.
+
+| Caso | Qué pasa | ¿Recalcula su vector? |
+|---|---|---|
+| Artículo nuevo | Se agrega | Sí |
+| Texto distinto | Se reemplaza | Sí |
+| Texto idéntico | Se conserva; solo se actualizan las rutas de sus imágenes | No |
+| La copia local es más nueva que el `.zim` (se actualizó por Internet) | Se conserva el texto local | No |
+| Ya no viene en el `.zim` | Se borra (salvo que se haya actualizado por Internet después de la fecha del `.zim`) | — |
+
+Medido con dos versiones reales del `.zim` de matemáticas en español separadas por tres meses
+(abril y julio de 2026): de 7 663 artículos, el 87 % no cambió, así que solo 967 (13 %) se
+volvieron a vectorizar; la comparación en sí tardó 40 s. Si la proporción se mantiene en la
+Wikipedia completa, serían ~250 000 artículos (≈ 11 h en la CPU de las pruebas) en vez de 2 M.
+La importación se puede interrumpir y reanudar, y el chat sigue funcionando mientras tanto.
+Las conversaciones guardadas no se tocan.
+
 ## ¿Qué necesito instalar?
 
 | Pieza | Para qué | ¿Obligatoria? |

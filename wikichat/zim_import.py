@@ -5,6 +5,7 @@ procesos y la importación es reanudable: si se interrumpe, al repetir el comand
 continúa donde quedó.
 """
 import calendar
+import json
 import logging
 import multiprocessing
 import os
@@ -187,7 +188,9 @@ def _init_worker(path):
 
 
 def _process_range(bounds):
-    """Convierte las entradas [start, end) del .zim. Devuelve (end, [(título, texto)])."""
+    """Convierte las entradas [start, end) del .zim.
+
+    Devuelve (end, [(título, texto, huella del texto, imágenes)])."""
     start, end = bounds
     out = []
     for i in range(start, end):
@@ -203,7 +206,7 @@ def _process_range(bounds):
             log.debug("entrada %d omitida: %s", i, e)
             continue
         if len(text) >= 200 and "#" not in entry.title:  # descarta vacías y anclas
-            out.append((entry.title, text, [(f"zim:{p}", c) for p, c in images]))
+            out.append((entry.title, text, db.text_hash(text), [(f"zim:{p}", c) for p, c in images]))
     return end, out
 
 
@@ -215,7 +218,47 @@ def zim_date(archive):
         return os.path.getmtime(archive.filename)
 
 
+def apply_article(conn, title, text, digest, images, snapshot, gen):
+    """Aplica un artículo del .zim sobre la copia local. Devuelve qué pasó:
+    "nuevo", "cambiado", "igual" o "local más reciente".
+
+    Solo "nuevo" y "cambiado" reemplazan el texto (y obligan a recalcular su vector); en los
+    demás casos se conservan texto y vector y solo se actualizan las rutas de las imágenes,
+    que cambian entre versiones del .zim.
+    """
+    row = conn.execute("SELECT id, hash, snapshot_ts FROM pages WHERE title=?", (title,)).fetchone()
+    if row is None:
+        db.upsert_page(conn, title, None, text, snapshot, images, commit=False, gen=gen, hash=digest)
+        return "nuevo"
+    pid, old_hash, old_ts = row
+    if (old_ts or 0) > snapshot:
+        # Se actualizó por internet después de la fecha de este .zim: el texto local es más nuevo.
+        db.set_images(conn, pid, images)
+        conn.execute("UPDATE pages SET gen=? WHERE id=?", (gen, pid))
+        return "local más reciente"
+    if old_hash == digest:
+        db.set_images(conn, pid, images)
+        conn.execute("UPDATE pages SET gen=?, snapshot_ts=? WHERE id=?", (gen, snapshot, pid))
+        return "igual"
+    db.upsert_page(conn, title, None, text, snapshot, images, commit=False, gen=gen, hash=digest)
+    return "cambiado"
+
+
+def remove_missing(conn, gen, snapshot):
+    """Borra los artículos que no venían en el .zim recién importado, salvo los que se
+    actualizaron por internet después de su fecha (son más nuevos que el .zim)."""
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM pages WHERE (gen IS NULL OR gen < ?) AND COALESCE(snapshot_ts, 0) <= ?",
+        (gen, snapshot))]
+    for pid in ids:
+        db._remove(conn, pid)
+    conn.commit()
+    return len(ids)
+
+
 def import_zim(conn, path, workers=None):
+    """Importa un .zim. Si ya había una copia (de otro .zim o actualizada por internet),
+    solo reprocesa lo que cambió: el resto conserva su texto y su vector."""
     try:
         from libzim.reader import Archive
     except ImportError:
@@ -224,38 +267,64 @@ def import_zim(conn, path, workers=None):
     archive = Archive(path)
     name = os.path.basename(path)
     snapshot = zim_date(archive)
+    day = time.strftime("%Y-%m-%d", time.gmtime(snapshot))
     total = archive.all_entry_count
 
     db.set_meta(conn, "zim_path", os.path.abspath(path))  # de aquí se leen las imágenes
     if db.get_meta(conn, "zim_name") != name:
-        db.set_meta(conn, "zim_name", name)
-        db.set_meta(conn, "zim_next_id", 0)
+        # Importación nueva: nueva "generación" para saber qué artículos dejaron de venir.
+        db.set_meta(conn, "zim_gen", int(db.get_meta(conn, "zim_gen") or 0) + 1, commit=False)
+        db.set_meta(conn, "zim_name", name, commit=False)
+        db.set_meta(conn, "zim_next_id", 0, commit=False)
+        db.set_meta(conn, "zim_counts", "{}")
+    gen = int(db.get_meta(conn, "zim_gen") or 1)
     start = int(db.get_meta(conn, "zim_next_id") or 0)
+    counts = json.loads(db.get_meta(conn, "zim_counts") or "{}")
     if start >= total:
         log.info("%s ya estaba importado por completo", name)
-        return
+        return counts
 
-    log.info("Importando %s (%d entradas, fecha %s) desde la entrada %d",
-             name, total, time.strftime("%Y-%m-%d", time.gmtime(snapshot)), start)
+    had_pages = conn.execute("SELECT 1 FROM pages LIMIT 1").fetchone() is not None
+    log.info("%s %s (%d entradas, fecha %s) desde la entrada %d",
+             "Actualizando con" if had_pages else "Importando", name, total, day, start)
     ranges = [(i, min(i + BATCH, total)) for i in range(start, total, BATCH)]
     workers = workers or max(1, (os.cpu_count() or 2) - 1)
-    t0, imported = time.time(), 0
+    t0 = time.time()
     with multiprocessing.Pool(workers, _init_worker, (path,)) as pool:
         for end, pages in pool.imap(_process_range, ranges):
-            for title, text, images in pages:
-                db.upsert_page(conn, title, None, text, snapshot_ts=snapshot, images=images,
-                               commit=False)
-            imported += len(pages)
+            for title, text, digest, images in pages:
+                what = apply_article(conn, title, text, digest, images, snapshot, gen)
+                counts[what] = counts.get(what, 0) + 1
             db.set_meta(conn, "zim_next_id", end, commit=False)
+            db.set_meta(conn, "zim_counts", json.dumps(counts), commit=False)
             conn.commit()
             rate = (end - start) / max(time.time() - t0, 1e-9)
-            log.info("%.1f%% · %d artículos importados · %.0f entradas/s",
-                     100 * end / total, imported, rate)
+            log.info("%.1f%% · %s · %.0f entradas/s", 100 * end / total, _fmt(counts), rate)
 
-    # Cambios posteriores al .zim: se piden desde su fecha (o se hace la puesta al día).
+    counts["borrado"] = remove_missing(conn, gen, snapshot)
+    db.set_meta(conn, "zim_counts", json.dumps(counts), commit=False)
+    db.set_meta(conn, "zim_date", day, commit=False)
+
+    # Cambios posteriores al .zim: se piden por internet desde su fecha. Si la copia ya
+    # estaba más al día que el .zim, se sigue desde donde iba.
     cursor = db.get_meta(conn, "rc_cursor")
-    if not cursor or db.get_meta(conn, "last_sync") is None:
-        db.set_meta(conn, "rc_cursor", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(snapshot)))
-    log.info("Importación terminada: %d artículos. Optimizando índice…", imported)
+    zim_cursor = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(snapshot))
+    if not cursor or cursor < zim_cursor:
+        db.set_meta(conn, "rc_cursor", zim_cursor, commit=False)
+        # Una puesta al día pendiente quedó cubierta por el .zim nuevo.
+        db.set_meta(conn, "check_after", None, commit=False)
+        db.set_meta(conn, "check_started", None, commit=False)
+    conn.commit()
+    log.info("Importación terminada: %s. Optimizando índice…", _fmt(counts))
     conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('optimize')")
     conn.commit()
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM pages p LEFT JOIN page_vectors v ON v.page = p.id WHERE v.page IS NULL"
+    ).fetchone()[0]
+    log.info("Artículos por vectorizar (en segundo plano con `serve`, o con `embed`): %d", pending)
+    return counts
+
+
+def _fmt(counts):
+    order = ("nuevo", "cambiado", "igual", "local más reciente", "borrado")
+    return ", ".join(f"{counts[k]} {k}" for k in order if counts.get(k)) or "sin artículos"

@@ -451,6 +451,91 @@ class ChatServerTest(unittest.TestCase):
         self.assertEqual(self.call("DELETE", "/api/chats/nope")[0], 404)
 
 
+def make_zim(path, date, pages, assets=()):
+    """Crea un .zim de prueba. pages: {título: (texto, [ruta de imagen])}."""
+    from libzim.writer import Creator, Hint, Item, StringProvider
+
+    class Page(Item):
+        def __init__(self, path, title, content, mime="text/html", front=True):
+            super().__init__()
+            self.p, self.t, self.c, self.m, self.f = path, title, content, mime, front
+        def get_path(self): return self.p
+        def get_title(self): return self.t
+        def get_mimetype(self): return self.m
+        def get_contentprovider(self): return StringProvider(self.c)
+        def get_hints(self): return {Hint.FRONT_ARTICLE: self.f}
+
+    with Creator(path).config_indexing(False, "spa") as c:
+        c.set_mainpath(next(iter(pages)))
+        c.add_metadata("Date", date)
+        for title, (text, imgs) in pages.items():
+            figs = "".join(f"<figure><img class='mw-file-element' width='200' height='150' src='./{src}'>"
+                           f"<figcaption>{title}</figcaption></figure>" for src in imgs)
+            c.add_item(Page(title, title, f"<div class='mw-parser-output'><p>{text}</p>{figs}</div>"))
+        for src in assets:
+            c.add_item(Page(src, "", "IMG", "image/webp", False))
+
+
+class ZimUpdateTest(unittest.TestCase):
+    """Importar un .zim nuevo sobre una copia existente solo reprocesa lo que cambió."""
+
+    def setUp(self):
+        try:
+            import libzim  # noqa: F401
+        except ImportError:
+            self.skipTest("libzim no instalado")
+        self.tmp = tempfile.mkdtemp()
+        self.conn = db.connect(os.path.join(self.tmp, "wiki.db"))
+        self.cfg = dict(DEFAULTS, db_path=os.path.join(self.tmp, "wiki.db"), embed_dims=8)
+
+    def test_second_zim_only_reprocesses_changes(self):
+        from wikichat.zim_import import import_zim
+        long = lambda s: (s + " ") * 20
+        v1 = os.path.join(self.tmp, "wiki_2026-01.zim")
+        make_zim(v1, "2026-01-01", {
+            "Igual": (long("Texto que no cambia"), ["_assets_/v1/igual.webp"]),
+            "Cambia": (long("Versión vieja"), []),
+            "Desaparece": (long("Contenido eliminado posteriormente"), []),
+            "Editado por internet": (long("Texto del zim viejo"), []),
+        }, assets=["_assets_/v1/igual.webp"])
+        import_zim(self.conn, v1, workers=1)
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            self.assertEqual(vectors.embed_pending(self.conn, self.cfg), 4)
+        ids = {t: db.page_id(self.conn, t) for t in ("Igual", "Cambia", "Editado por internet")}
+
+        # Un artículo se actualiza por internet después de la fecha del .zim nuevo.
+        db.upsert_page(self.conn, "Editado por internet", 99, long("Texto más nuevo de la API"),
+                       snapshot_ts=sync.parse_iso("2026-03-01T00:00:00Z"))
+        # Y otro existe solo porque se descargó por internet (no está en ningún .zim).
+        db.upsert_page(self.conn, "Solo internet", 7, long("Nuevo en la wiki"))
+
+        v2 = os.path.join(self.tmp, "wiki_2026-02.zim")
+        make_zim(v2, "2026-02-01", {
+            "Igual": (long("Texto que no cambia"), ["_assets_/v2/igual.webp"]),
+            "Cambia": (long("Versión nueva"), []),
+            "Nuevo": (long("Artículo creado"), []),
+            "Editado por internet": (long("Texto del zim nuevo"), []),
+        }, assets=["_assets_/v2/igual.webp"])
+        counts = import_zim(self.conn, v2, workers=1)
+
+        self.assertEqual(counts, {"igual": 1, "cambiado": 1, "nuevo": 1, "local más reciente": 1, "borrado": 1})
+        self.assertEqual(db.page_titles(self.conn),
+                         {"Igual", "Cambia", "Nuevo", "Editado por internet", "Solo internet"})
+        # Sin cambios: conserva su id (y por lo tanto su vector); las imágenes apuntan al .zim nuevo.
+        self.assertEqual(db.page_id(self.conn, "Igual"), ids["Igual"])
+        pics = images.for_pages(self.conn, [ids["Igual"]])
+        self.assertEqual(images.load(self.conn, self.cfg, pics[0]["id"]), (b"IMG", "image/webp"))
+        self.assertTrue(search(self.conn, "versión nueva"))
+        self.assertFalse(search(self.conn, "posteriormente"))
+        self.assertTrue(search(self.conn, "más nuevo de la API"))  # no se pisó con el .zim
+        # Solo se vectoriza lo que cambió de texto: "Cambia" y "Nuevo" por el .zim, y los dos
+        # actualizados por internet. "Igual" conserva su vector.
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            self.assertEqual(vectors.embed_pending(self.conn, self.cfg), 4)
+        self.assertEqual(db.get_meta(self.conn, "rc_cursor"), "2026-02-01T00:00:00Z")
+        self.assertEqual(import_zim(self.conn, v2, workers=1)["igual"], 1)  # repetir: no hace nada
+
+
 class ZimImportTest(unittest.TestCase):
     """Crea un .zim pequeño con libzim y lo importa (se omite si libzim no está)."""
 
