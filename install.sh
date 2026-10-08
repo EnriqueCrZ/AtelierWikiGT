@@ -15,15 +15,44 @@ if ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
     exit 1
 fi
 
-if [ ! -x .venv/bin/python ]; then
-    echo "Creando el entorno virtual en .venv…"
-    if ! "$PY" -m venv .venv; then
+has_pip() { [ -x .venv/bin/python ] && .venv/bin/python -m pip --version >/dev/null 2>&1; }
+
+# Pone pip dentro de .venv. Primero con ensurepip (viene con Python); en Debian/Ubuntu sin el
+# paquete python3-venv no está, y entonces se usa el instalador oficial get-pip.py (no pide sudo).
+install_pip() {
+    .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 && return 0
+    echo "Instalando pip en el entorno (get-pip.py)…"
+    .venv/bin/python - <<'PY' || return 1
+import os, runpy, sys, tempfile, urllib.request
+fd, path = tempfile.mkstemp(suffix="-get-pip.py")
+os.close(fd)
+urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", path)
+sys.argv = [path, "--quiet"]
+runpy.run_path(path, run_name="__main__")
+PY
+    has_pip
+}
+
+if [ -x .venv/bin/python ] && ! has_pip; then
+    echo "El entorno .venv existe pero no tiene pip (pasa si se creó sin python3-venv); reparándolo…"
+    install_pip || true
+fi
+
+if ! has_pip; then
+    if [ ! -x .venv/bin/python ]; then
+        echo "Creando el entorno virtual en .venv…"
+        # Sin python3-venv, Debian/Ubuntu crean el entorno pero sin pip y devuelven error:
+        # en ese caso se sigue y se instala pip aparte.
+        "$PY" -m venv .venv >/dev/null 2>&1 || "$PY" -m venv --without-pip .venv >/dev/null 2>&1 || true
+    fi
+    if [ ! -x .venv/bin/python ] || ! { has_pip || install_pip; }; then
         rm -rf .venv
         ver="$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
         echo >&2
-        echo "No se pudo crear el entorno virtual: falta el módulo venv. Instálalo con:" >&2
-        echo "    sudo apt install python${ver}-venv     # Debian / Ubuntu" >&2
-        echo "y vuelve a ejecutar ./install.sh" >&2
+        echo "No se pudo preparar el entorno virtual con pip. Instala el soporte de entornos" >&2
+        echo "virtuales de Python y vuelve a ejecutar ./install.sh:" >&2
+        echo "    sudo apt install python${ver}-venv      # Debian / Ubuntu" >&2
+        echo "    sudo dnf install python3-pip           # Fedora" >&2
         exit 1
     fi
 fi

@@ -55,8 +55,9 @@ Las conversaciones guardadas no se tocan.
 Solo Python 3.10+ en Linux. `./install.sh` crea un entorno virtual (`.venv`) dentro del proyecto
 e instala ahí las librerías, sin tocar el Python del sistema. Es necesario porque en Ubuntu 23.04+,
 Debian 12+ y otras distribuciones `pip install` directo falla con *externally-managed-environment*
-(PEP 668). Si `install.sh` dice que falta `venv`, instálalo con `sudo apt install python3-venv`
-(o `python3.X-venv` según tu versión) y repítelo.
+(PEP 668). Si el entorno queda sin `pip` (pasa en Debian/Ubuntu sin el paquete `python3-venv`),
+`install.sh` lo repara solo instalando `pip` con el instalador oficial `get-pip.py`, sin `sudo`.
+Solo si eso también falla (por ejemplo, sin Internet) te pedirá `sudo apt install python3-venv`.
 
 `./wikichat.sh` ejecuta el programa con ese entorno. Si prefieres, actívalo con
 `source .venv/bin/activate` y usa `python -m wikichat` en su lugar.
