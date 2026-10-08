@@ -273,6 +273,27 @@ class SemanticAndImagesTest(unittest.TestCase):
         pics = images.for_pages(self.conn, [db.page_id(self.conn, "Tikal"), db.page_id(self.conn, "Quetzal")])
         self.assertEqual([p["caption"] for p in pics], ["Templo I", "Quetzal"])
 
+    def test_images_ranked_by_caption_relevance(self):
+        pid = db.upsert_page(self.conn, "Volcanes", None, "Texto sobre volcanes.", images=[
+            ("zim:a.webp", "Mapa político de la región"),        # primera, pero no viene al caso
+            ("zim:b.webp", "Erupción del volcán con lava"),
+            ("zim:c.webp", "Ave sobre un árbol de la selva"),
+        ])
+        cfg = dict(self.cfg, embed_model="fake")
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            qvec = vectors.embed_query(cfg, "¿Cómo es una erupción de un volcan?")
+            pics = images.rank(self.conn, cfg, [pid], "¿Cómo es una erupción de un volcan?", qvec)
+            self.assertEqual(pics[0]["caption"], "Erupción del volcán con lava")
+            self.assertNotIn("Ave sobre un árbol de la selva", [p["caption"] for p in pics])
+            cached = self.conn.execute("SELECT COUNT(*) FROM images WHERE vec IS NOT NULL").fetchone()[0]
+            self.assertEqual(cached, 3)  # la próxima vez no se vuelven a calcular
+
+    def test_images_ranked_by_words_without_embeddings(self):
+        pid = db.upsert_page(self.conn, "Lago", None, "Texto.", images=[
+            ("zim:a.webp", "Mapa"), ("zim:b.webp", "Atardecer en el lago Atitlán")])
+        pics = images.rank(self.conn, dict(self.cfg, embed_model=""), [pid], "atardecer en Atitlán")
+        self.assertEqual(pics[0]["caption"], "Atardecer en el lago Atitlán")
+
     def test_remote_image_is_cached_and_offline_returns_none(self):
         pid = db.upsert_page(self.conn, "Lago", None, "Lago.", images=[("http://127.0.0.1:9/x.jpg", "x")])
         image_id = images.for_pages(self.conn, [pid])[0]["id"]

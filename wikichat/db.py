@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS images (
     src TEXT NOT NULL,
     caption TEXT,
     mime TEXT,
-    data BLOB
+    data BLOB,
+    vec BLOB                -- vector del pie de foto (se calcula la primera vez que se necesita)
 );
 CREATE INDEX IF NOT EXISTS images_page ON images(page);
 """
@@ -70,7 +71,8 @@ SKIP_SECTIONS = {
 
 
 # Columnas añadidas después de la primera versión: se agregan a bases ya existentes.
-MIGRATIONS = {"pages": {"size": "INTEGER", "hash": "TEXT", "gen": "INTEGER"}}
+MIGRATIONS = {"pages": {"size": "INTEGER", "hash": "TEXT", "gen": "INTEGER"},
+              "images": {"vec": "BLOB"}}
 
 
 def connect(path):

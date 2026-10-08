@@ -213,11 +213,11 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
             with db_lock:
                 if index is not None and time.time() - index.refreshed_at > INDEX_REFRESH_SECONDS:
                     index.refresh(conn)
-                sources, query = retrieve_for(conn, cfg, everything, index, summary)
-                pages = list(dict.fromkeys(s["page"] for s in sources))[:3]
-                # No repite imágenes que ya aparecieron en esta conversación.
+                sources, query, qvec = retrieve_for(conn, cfg, everything, index, summary)
+                pages = list(dict.fromkeys(s["page"] for s in sources))
+                # Las que mejor ilustran la pregunta, sin repetir las que ya salieron en el chat.
                 shown = {im["id"] for m in (chat["messages"] if chat_id else []) for im in m["images"]}
-                pics = images.for_pages(conn, pages, exclude=shown)
+                pics = images.rank(conn, cfg, pages, query, qvec, exclude=shown)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.end_headers()

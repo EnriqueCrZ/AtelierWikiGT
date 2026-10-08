@@ -143,7 +143,12 @@ Las imágenes vienen del `.zim`. Hay tres versiones de la Wikipedia en español:
 Con la versión **maxi**, el importador guarda hasta 6 imágenes por artículo con su pie de foto,
 descartando íconos y fórmulas. Las imágenes no se copian: se leen del `.zim` al mostrarlas, así
 que hay que conservarlo (si lo mueves, indica la nueva ruta en `zim_path`). Debajo de cada
-respuesta, el chat muestra las imágenes de los artículos usados como fuente.
+respuesta, el chat muestra las imágenes de los artículos usados como fuente que mejor ilustran
+la pregunta: compara el pie de foto de cada una con la pregunta usando el modelo de embeddings
+(el vector de cada pie se calcula una sola vez y queda guardado), con algo de ventaja para la
+primera imagen de cada artículo (la de la ficha, que suele no tener pie) y para los artículos
+mejor ubicados. Así, a "¿qué es un diagrama de Pourbaix?" muestra solo diagramas de Pourbaix y
+no las demás figuras de esos artículos. Sin modelo de embeddings, ordena por palabras en común.
 
 Para artículos que se actualizan después por la API se conservan las imágenes del `.zim`, y si
 no tenía ninguna se guarda la imagen principal del artículo: se descarga la primera vez que se

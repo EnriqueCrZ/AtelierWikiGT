@@ -31,15 +31,26 @@ def build_context(sources):
     ) or "(no se encontró ningún texto relacionado)"
 
 
-def retrieve(conn, cfg, query, index=None):
+def query_vector(cfg, query):
+    """Vector de la consulta, o None si no hay modelo de embeddings disponible."""
+    if not vectors.enabled(cfg):
+        return None
+    try:
+        return vectors.embed_query(cfg, query)
+    except backends.BackendUnavailable as e:
+        log.warning("Búsqueda semántica no disponible (%s); se usa solo BM25", e)
+        return None
+
+
+def retrieve(conn, cfg, query, index=None, qvec=None):
     """Búsqueda híbrida si hay índice semántico; si el modelo de embeddings no responde,
-    se usa solo la búsqueda por palabras."""
+    se usa solo la búsqueda por palabras. `qvec` evita recalcular el vector de la consulta."""
     semantic = None
     if index is not None and len(index):
-        try:
-            semantic = index.search(conn, vectors.embed_query(cfg, query), cfg["top_k"] * 2)
-        except backends.BackendUnavailable as e:
-            log.warning("Búsqueda semántica no disponible (%s); se usa solo BM25", e)
+        if qvec is None:
+            qvec = query_vector(cfg, query)
+        if qvec is not None:
+            semantic = index.search(conn, qvec, cfg["top_k"] * 2)
     return search(conn, query, cfg["top_k"], semantic)
 
 
@@ -98,9 +109,10 @@ def summarize(cfg, old_summary, messages):
 
 
 def retrieve_for(conn, cfg, messages, index=None, summary=None):
-    """(fragmentos, consulta usada) para la última pregunta de la conversación."""
+    """(fragmentos, consulta usada, vector de la consulta o None) para la última pregunta."""
     query = search_query(cfg, messages, summary)
-    return retrieve(conn, cfg, query, index), query
+    qvec = query_vector(cfg, query) if index is not None and len(index) else None
+    return retrieve(conn, cfg, query, index, qvec), query, qvec
 
 
 def stream_answer(cfg, messages, sources, summary=None):
