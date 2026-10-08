@@ -21,13 +21,14 @@ def _archive(path):
         return _archives[path]
 
 
-def for_pages(conn, page_ids, per_page=2, total=6):
+def for_pages(conn, page_ids, per_page=2, total=6, exclude=()):
     """Imágenes para mostrar junto a una respuesta: [{id, title, caption}]."""
     out = []
     for pid in page_ids:
         rows = conn.execute(
             """SELECT i.id, p.title, i.caption FROM images i JOIN pages p ON p.id = i.page
-               WHERE i.page = ? ORDER BY i.id LIMIT ?""", (pid, per_page)).fetchall()
+               WHERE i.page = ? ORDER BY i.id""", (pid,)).fetchall()
+        rows = [r for r in rows if r[0] not in exclude][:per_page]
         out += [{"id": r[0], "title": r[1], "caption": r[2] or r[1]} for r in rows]
         if len(out) >= total:
             break

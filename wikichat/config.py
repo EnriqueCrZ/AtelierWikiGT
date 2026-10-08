@@ -26,6 +26,11 @@ DEFAULTS = {
     "embed_doc_template": "title: {title} | text: {text}",
     "embed_query_prefix": "task: search result | query: ",
     "zim_path": "",
+    # Conversaciones guardadas.
+    "chats_db_path": "data/chats.db",
+    "history_messages": 6,        # mensajes recientes que recibe el modelo tal cual
+    "summarize_history": True,    # resume lo más antiguo para no perder el contexto
+    "rewrite_followups": False,   # el modelo reescribe preguntas de seguimiento (más lento)
     "host": "127.0.0.1",
     "port": 8800,
 }

@@ -5,11 +5,12 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
-from wikichat import backends, db, images, sync, vectors
+from wikichat import backends, chats, db, images, sync, vectors
 from wikichat.llm import retrieve
 from wikichat.config import DEFAULTS
 from wikichat.retrieval import search
@@ -69,6 +70,7 @@ class WikiChatTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.cfg = dict(DEFAULTS, db_path=os.path.join(self.tmp, "wiki.db"),
+                        chats_db_path=os.path.join(self.tmp, "chats.db"),
                         seed_categories=["Guatemala"], llm_url="http://127.0.0.1:9")
         self.conn = db.connect(self.cfg["db_path"])
         self.wiki = FakeWiki()
@@ -323,6 +325,130 @@ class BackendsTest(unittest.TestCase):
         cfg = dict(DEFAULTS, llm_url="http://127.0.0.1:9")
         with self.assertRaises(backends.BackendUnavailable):
             backends.embed(cfg, ["x"])
+
+
+class ChatStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.store = chats.ChatStore(os.path.join(tempfile.mkdtemp(), "chats.db"))
+
+    def test_create_title_rename_delete(self):
+        cid = self.store.create()
+        self.store.add_message(cid, "user", "¿Cuándo se fundó Antigua Guatemala y por qué la trasladaron a otro valle?")
+        self.assertTrue(self.store.get(cid)["title"].startswith("¿Cuándo se fundó Antigua"))
+        self.assertTrue(self.store.get(cid)["title"].endswith("…"))
+        self.store.add_message(cid, "user", "otra pregunta")  # no cambia el título
+        self.assertTrue(self.store.rename(cid, "  Antigua  "))
+        self.store.add_message(cid, "assistant", "x", [{"title": "Antigua", "section": "Historia"}], [{"id": 1}])
+        chat = self.store.get(cid)
+        self.assertEqual(chat["title"], "Antigua")
+        self.assertEqual(chat["messages"][-1]["sources"][0]["title"], "Antigua")
+        self.assertEqual([c["id"] for c in self.store.list()], [cid])
+        self.assertTrue(self.store.delete(cid))
+        self.assertIsNone(self.store.get(cid))
+        self.assertFalse(self.store.delete(cid))
+
+    def test_context_window_and_summary_trigger(self):
+        cid = self.store.create()
+        for i in range(5):
+            self.store.add_message(cid, "user", f"pregunta {i}")
+            self.store.add_message(cid, "assistant", f"respuesta {i}")
+        self.store.add_message(cid, "user", "pregunta actual")
+        chat = self.store.get(cid)
+        summary, recent = chats.context_for(chat, 4)
+        self.assertEqual([m["content"] for m in recent], ["pregunta 3", "respuesta 3", "pregunta 4", "respuesta 4"])
+        self.assertIsNone(summary)
+        self.assertTrue(chats.needs_summary(chat, 4))
+        upto = chat["messages"][-5]["id"]  # todo lo que quedó fuera de la ventana
+        self.store.set_summary(cid, "Hablaron de preguntas 0 a 2.", upto)
+        chat = self.store.get(cid)
+        self.assertEqual(chats.context_for(chat, 4)[0], "Hablaron de preguntas 0 a 2.")
+        self.assertFalse(chats.needs_summary(chat, 4))
+
+
+class ChatServerTest(unittest.TestCase):
+    """Flujo completo del chat guardado contra un servidor de modelos simulado."""
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        self.models = ThreadingHTTPServer(("127.0.0.1", 0), FakeModelServer)
+        threading.Thread(target=self.models.serve_forever, daemon=True).start()
+        self.cfg = dict(DEFAULTS, db_path=os.path.join(tmp, "wiki.db"),
+                        chats_db_path=os.path.join(tmp, "chats.db"), embed_model="",
+                        llm_url=f"http://127.0.0.1:{self.models.server_port}",
+                        history_messages=2)
+        conn = db.connect(self.cfg["db_path"])
+        db.upsert_page(conn, "Tikal", None, "Tikal es una ciudad maya en Petén.")
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.cfg, threading.Lock()))
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def tearDown(self):
+        for s in (self.httpd, self.models):
+            s.shutdown()
+            s.server_close()
+
+    def call(self, method, path, body=None):
+        req = urllib.request.Request(self.base + path, method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        if path == "/api/chat":
+            return 200, [json.loads(line) for line in raw.splitlines()]
+        return 200, json.loads(raw)
+
+    def ask(self, message, chat_id=None):
+        return self.call("POST", "/api/chat", {"chat_id": chat_id, "message": message})[1]
+
+    def test_conversation_is_saved_and_reopened(self):
+        events = self.ask("¿Qué es Tikal?")
+        chat_id = events[0]["id"]
+        self.assertEqual(events[0]["title"], "¿Qué es Tikal?")
+        self.assertEqual(events[1]["sources"][0]["title"], "Tikal")
+        self.ask("¿Dónde está?", chat_id)
+        _, chat = self.call("GET", f"/api/chats/{chat_id}")
+        self.assertEqual([m["role"] for m in chat["messages"]], ["user", "assistant"] * 2)
+        self.assertEqual(chat["messages"][1]["content"], "Hola mundo")
+        self.assertEqual(chat["messages"][1]["sources"][0]["title"], "Tikal")
+        _, listing = self.call("GET", "/api/chats")
+        self.assertEqual(listing[0]["id"], chat_id)
+        self.assertEqual(self.call("PATCH", f"/api/chats/{chat_id}", {"title": "Mayas"})[1], {"ok": True})
+        self.assertEqual(self.call("GET", f"/api/chats/{chat_id}")[1]["title"], "Mayas")
+        self.assertEqual(self.call("DELETE", f"/api/chats/{chat_id}")[1], {"ok": True})
+        self.assertEqual(self.call("GET", f"/api/chats/{chat_id}")[0], 404)
+
+    def test_images_are_not_repeated_within_a_chat(self):
+        conn = db.connect(self.cfg["db_path"])
+        db.upsert_page(conn, "Tikal", None, "Tikal es una ciudad maya en Petén.",
+                       images=[(f"zim:{n}.webp", f"foto {n}") for n in range(3)])
+        first = self.ask("¿Qué es Tikal?")
+        chat_id = first[0]["id"]
+        self.assertEqual([i["caption"] for i in first[1]["images"]], ["foto 0", "foto 1"])
+        self.assertEqual([i["caption"] for i in self.ask("Tikal maya", chat_id)[1]["images"]], ["foto 2"])
+
+    def test_old_messages_get_summarized_in_background(self):
+        chat_id = self.ask("¿Qué es Tikal?")[0]["id"]
+        for q in ("¿Dónde está?", "¿Quién la construyó?", "¿Cuándo?"):
+            self.ask(q, chat_id)
+        for _ in range(50):
+            if self.call("GET", f"/api/chats/{chat_id}")[1]["summary"]:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.call("GET", f"/api/chats/{chat_id}")[1]["summary"], "Hola mundo")
+
+    def test_followup_rewrite_uses_model_when_enabled(self):
+        chat_id = self.ask("¿Qué es Tikal?")[0]["id"]
+        self.assertEqual(self.ask("¿y dónde?", chat_id)[1]["query"], "¿Qué es Tikal? ¿y dónde?")
+        self.cfg["rewrite_followups"] = True
+        self.assertEqual(self.ask("¿y dónde?", chat_id)[1]["query"], "Hola mundo")
+
+    def test_invalid_requests(self):
+        self.assertEqual(self.call("POST", "/api/chat", {"message": "  "})[0], 400)
+        self.assertEqual(self.call("PATCH", "/api/chats/nope", {"title": "x"})[0], 404)
+        self.assertEqual(self.call("DELETE", "/api/chats/nope")[0], 404)
 
 
 class ZimImportTest(unittest.TestCase):

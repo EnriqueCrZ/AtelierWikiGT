@@ -99,6 +99,25 @@ Para artículos que se actualizan después por la API se conservan las imágenes
 no tenía ninguna se guarda la imagen principal del artículo: se descarga la primera vez que se
 muestra y queda guardada para usarla sin conexión.
 
+## Conversaciones guardadas
+
+Cada conversación se guarda en `data/chats.db`, un archivo aparte de la wiki: actualizar o
+reimportar la wiki nunca la toca. En la barra lateral puedes abrir, renombrar y borrar chats,
+y cada chat tiene su propia dirección (`http://127.0.0.1:8800/#<id>`), así que sobrevive a
+recargar la página o reiniciar el servidor. Con cada respuesta se guardan también sus fuentes
+e imágenes, y las imágenes no se repiten dentro de una misma conversación.
+
+Cómo se mantiene el contexto sin que el modelo reciba la conversación entera:
+
+- **Mensajes recientes:** el modelo recibe tal cual los últimos `history_messages` (6).
+- **Resumen de lo antiguo:** cuando quedan suficientes mensajes fuera de esa ventana, el propio
+  modelo los resume en segundo plano y el resumen acompaña a las preguntas siguientes
+  (`summarize_history`).
+- **Preguntas de seguimiento:** "¿y en qué se usa?" no sirve para buscar sola. Por defecto, si la
+  pregunta es corta se busca junto con la anterior ("¿Qué es el oro? ¿Y en qué se usa?"). Con
+  `rewrite_followups` el modelo la reescribe para que se entienda sola; busca mejor, pero
+  cuesta una llamada más al modelo (unos segundos en CPU).
+
 ## Puesta en marcha
 
 ```bash
@@ -145,6 +164,10 @@ python -m wikichat serve --no-update       # sin conexión a Wikipedia
 | `embed_dims`, `embed_chars` | Dimensiones guardadas (RAM del índice) y caracteres de cada artículo que se vectorizan. |
 | `embed_doc_template`, `embed_query_prefix` | Formato que espera el modelo de embeddings (los valores por defecto son los de embeddinggemma; para otros modelos consulta su documentación). Si cambias de modelo o de dimensiones, borra la tabla `page_vectors` para volver a vectorizar. |
 | `zim_path` | Ruta del `.zim` si lo moviste después de importarlo (para las imágenes). |
+| `chats_db_path` | Dónde se guardan las conversaciones. |
+| `history_messages` | Cuántos mensajes recientes recibe el modelo tal cual. |
+| `summarize_history` | Resumir los mensajes antiguos para conservar el contexto en chats largos. |
+| `rewrite_followups` | Que el modelo reescriba las preguntas de seguimiento antes de buscar (mejor búsqueda, más lento en CPU). |
 
 ## Cómo se arma una respuesta
 

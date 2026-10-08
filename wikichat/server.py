@@ -7,8 +7,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import backends, db, images, sync, vectors
-from .llm import retrieve_for, stream_answer
+from . import backends, chats, db, images, sync, vectors
+from .llm import retrieve_for, stream_answer, summarize
 
 log = logging.getLogger("wikichat.server")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -66,9 +66,42 @@ def start_background(cfg, index, auto_update=True, activity=None):
     return stop
 
 
-def make_handler(cfg, db_lock, index=None, activity=None):
+def make_handler(cfg, db_lock, index=None, activity=None, store=None):
     activity = activity or Activity()
     conn = db.connect(cfg["db_path"])
+    store = store or chats.ChatStore(cfg["chats_db_path"])
+    summarizing = set()
+    summarizing_lock = threading.Lock()
+
+    def maybe_summarize(chat_id):
+        """Resume en segundo plano los mensajes que quedaron fuera de la ventana reciente."""
+        recent = cfg["history_messages"]
+        chat = store.get(chat_id)
+        if not cfg["summarize_history"] or not chat or not chats.needs_summary(chat, recent):
+            return
+        with summarizing_lock:
+            if chat_id in summarizing:
+                return
+            summarizing.add(chat_id)
+
+        def work():
+            try:
+                with activity:  # que la vectorización de fondo no compita con el resumen
+                    _summarize()
+            except backends.BackendUnavailable as e:
+                log.warning("No se pudo resumir el chat %s: %s", chat_id, e)
+            finally:
+                with summarizing_lock:
+                    summarizing.discard(chat_id)
+
+        def _summarize():
+            outside = chat["messages"][:-recent] if recent else chat["messages"]
+            pending = [m for m in outside if m["id"] > chat["summary_upto"]]
+            text = summarize(cfg, chat["summary"], pending)
+            if text:
+                store.set_summary(chat_id, text, pending[-1]["id"])
+
+        threading.Thread(target=work, daemon=True, name=f"resumen-{chat_id}").start()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -96,6 +129,15 @@ def make_handler(cfg, db_lock, index=None, activity=None):
                     stats = db.stats(conn)
                 stats["semantic_index"] = len(index) if index is not None else None
                 self._json(stats)
+            elif self.path == "/api/chats":
+                self._json(store.list())
+            elif m := re.fullmatch(r"/api/chats/(\w+)", self.path):
+                chat = store.get(m.group(1))
+                if chat:
+                    chat.pop("summary_upto")
+                    self._json(chat)
+                else:
+                    self._json({"error": "chat no encontrado"}, 404)
             elif m := re.fullmatch(r"/api/image/(\d+)", self.path):
                 with db_lock:
                     img = images.load(conn, cfg, int(m.group(1)))
@@ -106,26 +148,67 @@ def make_handler(cfg, db_lock, index=None, activity=None):
             else:
                 self._json({"error": "no encontrado"}, 404)
 
-        def do_POST(self):
-            if self.path != "/api/chat":
-                return self._json({"error": "no encontrado"}, 404)
-            with activity:
-                self._chat()
-
-        def _chat(self):
+        def _body(self):
             length = int(self.headers.get("Content-Length", 0))
             try:
-                messages = json.loads(self.rfile.read(length))["messages"]
-                assert messages and messages[-1]["role"] == "user"
-            except (ValueError, KeyError, AssertionError, TypeError):
+                body = json.loads(self.rfile.read(length) or b"{}")
+                return body if isinstance(body, dict) else None
+            except ValueError:
+                return None
+
+        def do_POST(self):
+            if self.path == "/api/chats":
+                return self._json({"id": store.create()}, 201)
+            if self.path != "/api/chat":
+                return self._json({"error": "no encontrado"}, 404)
+            body = self._body()
+            with activity:
+                self._chat(body)
+
+        def do_PATCH(self):
+            m = re.fullmatch(r"/api/chats/(\w+)", self.path)
+            body = self._body()
+            if not m or not body or not isinstance(body.get("title"), str):
+                return self._json({"error": "petición inválida"}, 400)
+            ok = store.rename(m.group(1), body["title"])
+            self._json({"ok": ok}, 200 if ok else 404)
+
+        def do_DELETE(self):
+            m = re.fullmatch(r"/api/chats/(\w+)", self.path)
+            ok = bool(m) and store.delete(m.group(1))
+            self._json({"ok": ok}, 200 if ok else 404)
+
+        def _chat(self, body):
+            """Dos formas: {"chat_id"?, "message"} guarda la conversación en el servidor;
+            {"messages": [...]} responde sin guardar nada (el cliente lleva el historial)."""
+            chat_id, summary, chat = None, None, None
+            try:
+                if "message" in body:
+                    question = body["message"].strip()
+                    assert question
+                    chat_id = body.get("chat_id")
+                    if not chat_id or not store.exists(chat_id):
+                        chat_id = store.create()
+                    store.add_message(chat_id, "user", question)
+                    chat = store.get(chat_id)
+                    summary, recent = chats.context_for(chat, cfg["history_messages"])
+                    everything = [{"role": m["role"], "content": m["content"]} for m in chat["messages"]]
+                    messages = recent + [everything[-1]]
+                else:
+                    everything = messages = body["messages"]
+                    assert messages and messages[-1]["role"] == "user"
+                    messages = messages[-(cfg["history_messages"] + 1):]
+            except (KeyError, AssertionError, TypeError, AttributeError):
                 return self._json({"error": "petición inválida"}, 400)
 
             with db_lock:
                 if index is not None and time.time() - index.refreshed_at > INDEX_REFRESH_SECONDS:
                     index.refresh(conn)
-                sources = retrieve_for(conn, cfg, messages, index)
+                sources, query = retrieve_for(conn, cfg, everything, index, summary)
                 pages = list(dict.fromkeys(s["page"] for s in sources))[:3]
-                pics = images.for_pages(conn, pages)
+                # No repite imágenes que ya aparecieron en esta conversación.
+                shown = {im["id"] for m in (chat["messages"] if chat_id else []) for im in m["images"]}
+                pics = images.for_pages(conn, pages, exclude=shown)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.end_headers()
@@ -134,15 +217,21 @@ def make_handler(cfg, db_lock, index=None, activity=None):
                 self.wfile.write((json.dumps(obj, ensure_ascii=False) + "\n").encode())
                 self.wfile.flush()
 
+            brief = [{"title": s["title"], "section": s["section"]} for s in sources]
+            answer = []
             try:
-                send({"type": "sources",
-                      "sources": [{"title": s["title"], "section": s["section"]} for s in sources],
-                      "images": pics})
-                for text in stream_answer(cfg, messages, sources):
+                if chat_id:
+                    send({"type": "chat", "id": chat_id, "title": store.get(chat_id)["title"]})
+                send({"type": "sources", "sources": brief, "images": pics, "query": query})
+                for text in stream_answer(cfg, messages, sources, summary):
+                    answer.append(text)
                     send({"type": "token", "text": text})
                 send({"type": "done"})
             except (BrokenPipeError, ConnectionResetError):
-                pass
+                answer.append(" [respuesta interrumpida]")
+            if chat_id:
+                store.add_message(chat_id, "assistant", "".join(answer), brief, pics, query)
+                maybe_summarize(chat_id)
 
     return Handler
 
@@ -154,8 +243,9 @@ def serve(cfg, auto_update=True):
         log.warning("Búsqueda semántica desactivada: instala numpy (pip install numpy)")
     activity = Activity()
     start_background(cfg, index, auto_update, activity)
+    store = chats.ChatStore(cfg["chats_db_path"])
     httpd = ThreadingHTTPServer((cfg["host"], cfg["port"]),
-                                make_handler(cfg, db_lock, index, activity))
+                                make_handler(cfg, db_lock, index, activity, store))
     print(f"Chat disponible en http://{cfg['host']}:{cfg['port']}")
     try:
         httpd.serve_forever()
