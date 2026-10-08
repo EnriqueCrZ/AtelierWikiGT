@@ -8,7 +8,9 @@ import calendar
 import logging
 import multiprocessing
 import os
+import posixpath
 import time
+import urllib.parse
 from html.parser import HTMLParser
 
 from . import db
@@ -29,6 +31,8 @@ BLOCK_TAGS = {
     "p", "div", "section", "li", "ul", "ol", "dl", "dd", "dt", "blockquote", "pre",
     "table", "caption", "tr", "br", "figcaption", "details", "summary",
 }
+MAX_IMAGES = 6
+MIN_IMAGE_SIDE = 100  # px mostrados; descarta íconos, banderitas y diagramas diminutos
 VOID_TAGS = {"br", "img", "hr", "meta", "link", "input", "wbr", "source", "area", "col", "embed"}
 
 
@@ -38,6 +42,9 @@ class TextExtractor(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.out = []
+        self.images = []       # [src, pie de foto]
+        self.figure_img = None
+        self.caption = None
         self.stack = []        # (tag, descarta)
         self.skip_depth = 0
         self.in_body = False
@@ -56,6 +63,13 @@ class TextExtractor(HTMLParser):
             if tag not in VOID_TAGS:
                 self.stack.append((tag, False))
             return
+        if tag == "img":
+            self._image(attrs, classes)
+            return
+        if tag == "figure":
+            self.figure_img = None
+        elif tag == "figcaption":
+            self.caption = []
         if tag == "math":
             # Las fórmulas se guardan como su TeX (atributo alttext).
             alt = attrs.get("alttext")
@@ -76,6 +90,24 @@ class TextExtractor(HTMLParser):
         if tag not in VOID_TAGS:
             self.stack.append((tag, False))
 
+    def _image(self, attrs, classes):
+        if "mw-file-element" not in classes or len(self.images) >= MAX_IMAGES:
+            return
+        try:
+            if min(int(attrs.get("width", 0)), int(attrs.get("height", 0))) < MIN_IMAGE_SIDE:
+                return
+        except ValueError:
+            return
+        src = attrs.get("src")
+        if not src:
+            return
+        for i, img in enumerate(self.images):
+            if img[0] == src:  # repetida (p. ej. ficha y figura): conserva el mejor pie
+                self.figure_img = i
+                return
+        self.images.append([src, attrs.get("alt") or ""])
+        self.figure_img = len(self.images) - 1
+
     def _push_skip(self, tag):
         self.stack.append((tag, True))
         self.skip_depth += 1
@@ -92,6 +124,14 @@ class TextExtractor(HTMLParser):
                 break
         if self.skip_depth:
             return
+        if tag == "figcaption" and self.caption is not None:
+            if self.figure_img is not None:
+                text = " ".join("".join(self.caption).split())
+                if text:
+                    self.images[self.figure_img][1] = text
+            self.caption = None
+        elif tag == "figure":
+            self.figure_img = None
         if self.heading and tag == f"h{self.heading[0]}":
             level, parts = self.heading
             title = " ".join("".join(parts).split())
@@ -104,6 +144,8 @@ class TextExtractor(HTMLParser):
     def handle_data(self, data):
         if not self.in_body or self.skip_depth:
             return
+        if self.caption is not None:
+            self.caption.append(data)
         if self.heading:
             self.heading[1].append(data)
         else:
@@ -115,10 +157,22 @@ class TextExtractor(HTMLParser):
 
 
 def html_to_text(html):
+    return parse_article(html)[0]
+
+
+def parse_article(html, path=""):
+    """Devuelve (texto, [(ruta de la imagen dentro del .zim, pie de foto)])."""
     parser = TextExtractor()
     parser.feed(html)
     parser.close()
-    return parser.text()
+    base = posixpath.dirname(path)
+    images = []
+    for src, caption in parser.images:
+        if "://" in src:
+            continue
+        src = urllib.parse.unquote(src.split("?")[0])
+        images.append((posixpath.normpath(posixpath.join(base, src)).lstrip("/"), caption))
+    return parser.text(), images
 
 
 # --- Trabajo en paralelo -------------------------------------------------------------
@@ -144,12 +198,12 @@ def _process_range(bounds):
             item = entry.get_item()
             if not item.mimetype.startswith("text/html"):
                 continue
-            text = html_to_text(bytes(item.content).decode("utf-8", "replace"))
+            text, images = parse_article(bytes(item.content).decode("utf-8", "replace"), entry.path)
         except Exception as e:  # una entrada dañada no debe detener la importación
             log.debug("entrada %d omitida: %s", i, e)
             continue
         if len(text) >= 200 and "#" not in entry.title:  # descarta vacías y anclas
-            out.append((entry.title, text))
+            out.append((entry.title, text, [(f"zim:{p}", c) for p, c in images]))
     return end, out
 
 
@@ -172,6 +226,7 @@ def import_zim(conn, path, workers=None):
     snapshot = zim_date(archive)
     total = archive.all_entry_count
 
+    db.set_meta(conn, "zim_path", os.path.abspath(path))  # de aquí se leen las imágenes
     if db.get_meta(conn, "zim_name") != name:
         db.set_meta(conn, "zim_name", name)
         db.set_meta(conn, "zim_next_id", 0)
@@ -187,8 +242,9 @@ def import_zim(conn, path, workers=None):
     t0, imported = time.time(), 0
     with multiprocessing.Pool(workers, _init_worker, (path,)) as pool:
         for end, pages in pool.imap(_process_range, ranges):
-            for title, text in pages:
-                db.upsert_page(conn, title, None, text, snapshot_ts=snapshot, commit=False)
+            for title, text, images in pages:
+                db.upsert_page(conn, title, None, text, snapshot_ts=snapshot, images=images,
+                               commit=False)
             imported += len(pages)
             db.set_meta(conn, "zim_next_id", end, commit=False)
             conn.commit()

@@ -44,10 +44,16 @@ def fetch(conn, client, title):
     if page is None:
         db.delete_page(conn, title)
         return False
-    new_title, revid, text = page
+    new_title, revid, text, thumb = page
     if new_title != title:
         db.delete_page(conn, title, commit=False)
-    db.upsert_page(conn, new_title, revid, text)
+    # Conserva las imágenes que ya tenía (p. ej. del .zim); si no tenía ninguna, guarda la
+    # principal del artículo: se descarga y queda en caché la primera vez que se muestra.
+    pid = db.upsert_page(conn, new_title, revid, text, commit=False)
+    if thumb and not conn.execute("SELECT 1 FROM images WHERE page=?", (pid,)).fetchone():
+        conn.execute("INSERT INTO images (page, src, caption) VALUES (?, ?, ?)",
+                     (pid, thumb, new_title))
+    conn.commit()
     log.debug("actualizado: %s", new_title)
     return True
 

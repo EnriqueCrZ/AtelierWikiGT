@@ -78,19 +78,19 @@ class WikiClient:
         return titles
 
     def page_text(self, title):
-        """Devuelve (título, revid, texto plano) o None si no existe.
-
-        Si el título es una redirección, devuelve el artículo de destino.
-        """
+        """Devuelve (título, revid, texto plano, URL de la imagen principal o None), o None
+        si no existe. Si el título es una redirección, devuelve el artículo de destino."""
         data = self.get(
-            action="query", prop="extracts|info", explaintext="1",
+            action="query", prop="extracts|info|pageimages", explaintext="1",
             exsectionformat="wiki", redirects="1", titles=title,
+            piprop="thumbnail", pithumbsize="480",
         )
         pages = data.get("query", {}).get("pages", [])
         if not pages or pages[0].get("missing") or "extract" not in pages[0]:
             return None
         p = pages[0]
-        return p["title"], p.get("lastrevid"), p["extract"]
+        thumb = (p.get("thumbnail") or {}).get("source")
+        return p["title"], p.get("lastrevid"), p["extract"], thumb
 
     def latest_revisions(self, titles):
         """{título: (revid, timestamp ISO)} en lotes de 50; None si ya no existe o es redirección."""

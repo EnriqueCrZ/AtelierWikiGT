@@ -11,11 +11,13 @@ import time
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT UNIQUE NOT NULL,
     revid INTEGER,          -- NULL si viene de un .zim (no trae número de revisión)
-    snapshot_ts REAL        -- fecha del contenido guardado (fecha del .zim o de descarga)
+    snapshot_ts REAL,       -- fecha del contenido guardado (fecha del .zim o de descarga)
+    size INTEGER            -- largo del texto; los artículos largos se vectorizan primero
 );
+CREATE INDEX IF NOT EXISTS pages_size ON pages(size DESC);
 CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY,
     page INTEGER NOT NULL,
@@ -36,6 +38,22 @@ CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
     VALUES ('delete', old.id, old.title, old.section, old.text);
 END;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- Un vector por artículo (título + introducción), cuantizado a int8.
+CREATE TABLE IF NOT EXISTS page_vectors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page INTEGER UNIQUE NOT NULL,
+    vec BLOB NOT NULL
+);
+-- src: "zim:<ruta dentro del .zim>" o URL; data: copia local (caché) si se descargó.
+CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page INTEGER NOT NULL,
+    src TEXT NOT NULL,
+    caption TEXT,
+    mime TEXT,
+    data BLOB
+);
+CREATE INDEX IF NOT EXISTS images_page ON images(page);
 """
 
 CHUNK_CHARS = 1500
@@ -98,27 +116,56 @@ def chunk_text(text):
     return chunks
 
 
-def delete_page(conn, title, commit=True):
+def _remove(conn, page_id, keep_images=False):
+    conn.execute("DELETE FROM chunks WHERE page=?", (page_id,))
+    conn.execute("DELETE FROM page_vectors WHERE page=?", (page_id,))
+    if not keep_images:
+        conn.execute("DELETE FROM images WHERE page=?", (page_id,))
+    conn.execute("DELETE FROM pages WHERE id=?", (page_id,))
+
+
+def page_id(conn, title):
     row = conn.execute("SELECT id FROM pages WHERE title=?", (title,)).fetchone()
-    if row:
-        conn.execute("DELETE FROM chunks WHERE page=?", (row[0],))
-        conn.execute("DELETE FROM pages WHERE id=?", (row[0],))
+    return row[0] if row else None
+
+
+def delete_page(conn, title, commit=True):
+    pid = page_id(conn, title)
+    if pid is not None:
+        _remove(conn, pid)
     if commit:
         conn.commit()
 
 
-def upsert_page(conn, title, revid, text, snapshot_ts=None, commit=True):
-    delete_page(conn, title, commit=False)
+def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=True):
+    """Guarda o reemplaza un artículo.
+
+    images: lista de (src, pie de foto). None conserva las imágenes que ya tenía
+    (las actualizaciones por API no traen las del .zim y no queremos perderlas).
+    """
+    old = page_id(conn, title)
+    if old is not None:
+        _remove(conn, old, keep_images=images is None)
     cur = conn.execute(
-        "INSERT INTO pages (title, revid, snapshot_ts) VALUES (?, ?, ?)",
-        (title, revid, snapshot_ts or time.time()),
+        "INSERT INTO pages (title, revid, snapshot_ts, size) VALUES (?, ?, ?, ?)",
+        (title, revid, snapshot_ts or time.time(), len(text)),
     )
+    new = cur.lastrowid
     conn.executemany(
         "INSERT INTO chunks (page, title, section, text) VALUES (?, ?, ?, ?)",
-        [(cur.lastrowid, title, s, t) for s, t in chunk_text(text)],
+        [(new, title, s, t) for s, t in chunk_text(text)],
     )
+    if images is None:
+        if old is not None:
+            conn.execute("UPDATE images SET page=? WHERE page=?", (new, old))
+    else:
+        conn.executemany(
+            "INSERT INTO images (page, src, caption) VALUES (?, ?, ?)",
+            [(new, src, caption) for src, caption in images],
+        )
     if commit:
         conn.commit()
+    return new
 
 
 def has_page(conn, title):
@@ -138,4 +185,6 @@ def stats(conn):
         "last_sync": get_meta(conn, "last_sync"),
         "zim_source": get_meta(conn, "zim_name"),
         "catchup_pending": get_meta(conn, "check_after") is not None,
+        "embedded_pages": conn.execute("SELECT COUNT(*) FROM page_vectors").fetchone()[0],
+        "images": conn.execute("SELECT MAX(id) FROM images").fetchone()[0] or 0,
     }

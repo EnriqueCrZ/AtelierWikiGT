@@ -1,13 +1,16 @@
 import json
 import os
+import re
 import tempfile
 import threading
 import time
 import unittest
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
-from wikichat import db, sync
+from wikichat import backends, db, images, sync, vectors
+from wikichat.llm import retrieve
 from wikichat.config import DEFAULTS
 from wikichat.retrieval import search
 from wikichat.server import make_handler
@@ -24,6 +27,7 @@ class FakeWiki:
             "Lago de Atitlán": (20, "Lago volcánico rodeado de pueblos mayas."),
         }
         self.redirects = {}
+        self.thumbs = {}
         self.rev_ts = {}
         self.recent = []
         self.offline = False
@@ -44,7 +48,7 @@ class FakeWiki:
         if title not in self.pages:
             return None
         revid, text = self.pages[title]
-        return title, revid, text
+        return title, revid, text, self.thumbs.get(title)
 
     def latest_revisions(self, titles):
         self._check()
@@ -65,7 +69,7 @@ class WikiChatTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.cfg = dict(DEFAULTS, db_path=os.path.join(self.tmp, "wiki.db"),
-                        seed_categories=["Guatemala"], ollama_url="http://127.0.0.1:9")
+                        seed_categories=["Guatemala"], llm_url="http://127.0.0.1:9")
         self.conn = db.connect(self.cfg["db_path"])
         self.wiki = FakeWiki()
 
@@ -190,8 +194,135 @@ class WikiChatTest(unittest.TestCase):
             httpd.server_close()
         self.assertEqual(events[0]["sources"][0]["title"], "Lago de Atitlán")
         text = "".join(e["text"] for e in events if e["type"] == "token")
-        self.assertIn("No hay LLM disponible", text)
+        self.assertIn("No hay modelo de chat disponible", text)
         self.assertEqual(events[-1]["type"], "done")
+
+
+# --- Búsqueda semántica, imágenes y modelos -------------------------------------------
+
+TOPICS = ["volcan", "lago", "ciudad", "ave", "maiz", "cafe", "mar", "selva"]
+SYNONYMS = {"montaña de fuego": "volcan", "pájaro": "ave", "grano amarillo": "maiz"}
+
+
+def fake_embed(cfg, texts):
+    """Embeddings de juguete: un eje por tema, con sinónimos que BM25 no conoce."""
+    out = []
+    for t in texts:
+        t = t.lower()
+        for syn, topic in SYNONYMS.items():
+            t = t.replace(syn, topic)
+        out.append([1.0 + t.count(topic) * 5 for topic in TOPICS] + [0.0] * 8)
+    return out
+
+
+class SemanticAndImagesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = dict(DEFAULTS, db_path=os.path.join(self.tmp, "wiki.db"),
+                        llm_url="http://127.0.0.1:9", embed_dims=8, top_k=2)
+        self.conn = db.connect(self.cfg["db_path"])
+        db.upsert_page(self.conn, "Volcán de Fuego", None, "El volcan de Fuego es un volcan activo. " * 3)
+        db.upsert_page(self.conn, "Quetzal", None, "El quetzal es un ave de la selva.")
+        db.upsert_page(self.conn, "Maíz", None, "El maiz es la base de la comida y un cultivo antiguo de Mesoamérica. " * 5)
+
+    def test_embed_pending_longest_first_and_resumable(self):
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            self.assertEqual(vectors.embed_pending(self.conn, self.cfg, batch=1, max_pages=1), 1)
+            first = self.conn.execute("SELECT p.title FROM page_vectors v JOIN pages p ON p.id=v.page").fetchall()
+            self.assertEqual(first, [("Maíz",)])
+            self.assertEqual(vectors.embed_pending(self.conn, self.cfg), 2)
+            self.assertEqual(vectors.embed_pending(self.conn, self.cfg), 0)
+
+    def test_hybrid_finds_synonyms_keyword_search_misses(self):
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            vectors.embed_pending(self.conn, self.cfg)
+            index = vectors.VectorIndex(8)
+            index.refresh(self.conn)
+            query = "¿qué pájaro es símbolo nacional?"
+            self.assertNotIn("Quetzal", [s["title"] for s in retrieve(self.conn, self.cfg, query)])
+            self.assertEqual(retrieve(self.conn, self.cfg, query, index)[0]["title"], "Quetzal")
+
+    def test_replaced_article_vector_is_ignored_until_reembedded(self):
+        with mock.patch.object(backends, "embed", side_effect=fake_embed):
+            vectors.embed_pending(self.conn, self.cfg)
+            index = vectors.VectorIndex(8)
+            index.refresh(self.conn)
+            db.upsert_page(self.conn, "Quetzal", 2, "Ahora habla de otra cosa.")
+            pages = {p for p, _ in index.search(self.conn, vectors.embed_query(self.cfg, "ave"), 5)}
+            self.assertNotIn(db.page_id(self.conn, "Quetzal"), pages)
+
+    def test_exact_title_intro_comes_first(self):
+        db.upsert_page(self.conn, "Maíz transgénico", None, "El maíz maíz maíz maíz modificado. " * 9)
+        self.assertEqual(retrieve(self.conn, self.cfg, "¿Qué es el maíz?")[0]["title"], "Maíz")
+
+    def test_without_embedding_model_falls_back_to_keywords(self):
+        index = vectors.VectorIndex(8)
+        index.matrix = vectors.np.ones((1, 8), dtype=vectors.np.int8)
+        index.pages = index.vec_ids = vectors.np.array([1])
+        self.assertEqual(retrieve(self.conn, self.cfg, "volcan activo", index)[0]["title"], "Volcán de Fuego")
+
+    def test_api_update_keeps_zim_images_and_adds_lead_image_when_none(self):
+        db.upsert_page(self.conn, "Tikal", None, "Templos mayas.", images=[("zim:_assets_/tikal.webp", "Templo I")])
+        wiki = FakeWiki()
+        wiki.pages = {"Tikal": (5, "Templos mayas en Petén."), "Quetzal": (6, "Ave.")}
+        wiki.thumbs = {"Tikal": "https://upload.example/t.jpg", "Quetzal": "https://upload.example/q.jpg"}
+        sync.fetch(self.conn, wiki, "Tikal")
+        sync.fetch(self.conn, wiki, "Quetzal")
+        pics = images.for_pages(self.conn, [db.page_id(self.conn, "Tikal"), db.page_id(self.conn, "Quetzal")])
+        self.assertEqual([p["caption"] for p in pics], ["Templo I", "Quetzal"])
+
+    def test_remote_image_is_cached_and_offline_returns_none(self):
+        pid = db.upsert_page(self.conn, "Lago", None, "Lago.", images=[("http://127.0.0.1:9/x.jpg", "x")])
+        image_id = images.for_pages(self.conn, [pid])[0]["id"]
+        self.assertIsNone(images.load(self.conn, self.cfg, image_id))  # sin red: no rompe
+        self.conn.execute("UPDATE images SET data=?, mime='image/png' WHERE id=?", (b"PNG", image_id))
+        self.assertEqual(images.load(self.conn, self.cfg, image_id), (b"PNG", "image/png"))
+
+
+class FakeModelServer(BaseHTTPRequestHandler):
+    """Responde como Ollama (/api/...) o como un servidor compatible con OpenAI (/v1/...)."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.send_response(200)
+        self.end_headers()
+        if self.path == "/v1/chat/completions":
+            for word in ("Hola", " mundo"):
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": word}}]}).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+        elif self.path == "/v1/embeddings":
+            data = [{"index": i, "embedding": [float(i), 1.0]} for i in range(len(body["input"]))]
+            self.wfile.write(json.dumps({"data": data[::-1]}).encode())
+        elif self.path == "/api/chat":
+            assert body["think"] is False
+            for word in ("Hola", " mundo"):
+                self.wfile.write(json.dumps({"message": {"content": word}, "done": False}).encode() + b"\n")
+            self.wfile.write(json.dumps({"done": True}).encode() + b"\n")
+        elif self.path == "/api/embed":
+            self.wfile.write(json.dumps({"embeddings": [[float(i), 1.0] for i in range(len(body["input"]))]}).encode())
+
+
+class BackendsTest(unittest.TestCase):
+    def test_ollama_and_openai_protocols(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeModelServer)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            for backend, url in (("ollama", base), ("openai", base + "/v1")):
+                cfg = dict(DEFAULTS, llm_backend=backend, llm_url=url)
+                self.assertEqual("".join(backends.chat_stream(cfg, [])), "Hola mundo")
+                self.assertEqual(backends.embed(cfg, ["a", "b"]), [[0.0, 1.0], [1.0, 1.0]])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_unreachable_backend_raises_clear_error(self):
+        cfg = dict(DEFAULTS, llm_url="http://127.0.0.1:9")
+        with self.assertRaises(backends.BackendUnavailable):
+            backends.embed(cfg, ["x"])
 
 
 class ZimImportTest(unittest.TestCase):
@@ -214,13 +345,21 @@ class ZimImportTest(unittest.TestCase):
             def get_contentprovider(self): return StringProvider(self.h)
             def get_hints(self): return {Hint.FRONT_ARTICLE: True}
 
+        class Asset(Page):
+            def get_mimetype(self): return "image/webp"
+            def get_hints(self): return {Hint.FRONT_ARTICLE: False}
+
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "prueba.zim")
         body = "<div class='mw-parser-output'><p>%s</p></div>"
+        figure = ("<figure><img class='mw-file-element' width='250' height='160' "
+                  "src='./_assets_/a/Templo_I.webp'><figcaption>Gran Jaguar</figcaption></figure>"
+                  "<img class='mw-file-element' width='20' height='20' src='./_assets_/a/icono.png'>")
         with Creator(path).config_indexing(False, "spa") as c:
             c.set_mainpath("Tikal")
             c.add_metadata("Date", "2026-08-26")
-            c.add_item(Page("Tikal", "Tikal", body % ("Tikal es un sitio arqueológico maya. " * 10)))
+            c.add_item(Page("Tikal", "Tikal", body % ("Tikal es un sitio arqueológico maya. " * 10) + figure))
+            c.add_item(Asset("_assets_/a/Templo_I.webp", "", "IMAGEN"))
             c.add_item(Page("Quetzal", "Quetzal", body % ("El quetzal es el ave nacional. " * 10)))
             c.add_item(Page("Corta", "Corta", body % "muy corta"))
             c.add_redirection("Mundo_Perdido", "Mundo Perdido", "Tikal", {Hint.FRONT_ARTICLE: True})
@@ -230,6 +369,10 @@ class ZimImportTest(unittest.TestCase):
         self.assertEqual(db.page_titles(conn), {"Tikal", "Quetzal"})
         self.assertEqual(search(conn, "ave nacional")[0]["title"], "Quetzal")
         self.assertEqual(db.get_meta(conn, "rc_cursor"), "2026-08-26T00:00:00Z")
+        pics = images.for_pages(conn, [db.page_id(conn, "Tikal")])
+        self.assertEqual([p["caption"] for p in pics], ["Gran Jaguar"])  # sin el ícono
+        cfg = dict(DEFAULTS, db_path=os.path.join(tmp, "wiki.db"))
+        self.assertEqual(images.load(conn, cfg, pics[0]["id"]), (b"IMAGEN", "image/webp"))
         import_zim(conn, path, workers=1)  # ya importado: no hace nada
         self.assertEqual(db.stats(conn)["pages"], 2)
 

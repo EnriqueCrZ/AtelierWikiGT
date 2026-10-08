@@ -29,76 +29,143 @@ El `.zim` se usa **una sola vez** como punto de partida. Después, el sistema el
 **Si la actualización falla** (sin Internet, Wikipedia limita las peticiones, etc.) se
 registra un aviso y todo sigue funcionando con la copia local.
 
-## Requisitos
+## ¿Qué necesito instalar?
 
-| | |
-|---|---|
-| Python | 3.10+ |
-| `libzim` | solo para importar: `pip install libzim` |
-| Disco | ~11 GB del `.zim` (se puede borrar después) + base de tamaño similar (estimado: 12–18 GB) |
-| [Ollama](https://ollama.com) | para el chat: `ollama pull qwen2.5:7b` (con poca RAM: `qwen2.5:3b`) |
+| Pieza | Para qué | ¿Obligatoria? |
+|---|---|---|
+| Python 3.10+ | todo el sistema | sí |
+| `pip install -r requirements.txt` | `libzim` (importar el `.zim` y mostrar imágenes) y `numpy` (búsqueda semántica) | sí para importar; numpy opcional |
+| Un servidor de modelos local | redactar respuestas y búsqueda semántica | no: sin él funciona como un buscador tipo Kiwix |
 
-Sin Ollama todo funciona igual, pero en vez de una respuesta redactada verás los fragmentos
-encontrados (como una búsqueda en Kiwix).
+**Servidor de modelos:** el más sencillo es [Ollama](https://ollama.com), pero sirve cualquiera compatible con la
+API de OpenAI (llama.cpp `llama-server`, LM Studio, vLLM, Jan). Se necesitan dos modelos:
+
+```bash
+ollama pull embeddinggemma   # embeddings, 621 MB: búsqueda semántica
+ollama pull qwen2.5:7b       # chat, 4,7 GB (con poca RAM: qwen2.5:3b, 1,9 GB)
+```
+
+Con llama.cpp, LM Studio u otro servidor compatible con OpenAI:
+
+```json
+"llm_backend": "openai", "llm_url": "http://localhost:8080/v1"
+```
+
+Si un modelo no responde, el sistema no se cae: sin modelo de embeddings usa solo la búsqueda
+por palabras, y sin modelo de chat muestra los fragmentos encontrados.
+
+### Cuánto pide cada parte (medido)
+
+Medido en un servidor de 4 núcleos (Xeon 2,8 GHz, AVX-512, **sin GPU**), con artículos reales de
+Wikipedia en español. Un PC con GPU será mucho más rápido; aquí no se pudo medir.
+
+| | Modelo | Velocidad en esa CPU | Memoria |
+|---|---|---|---|
+| Embeddings | `embeddinggemma` (recomendado) | 6,5 artículos/s → **~86 h para 2 M artículos** | 0,65 GB |
+| Embeddings | `qwen3-embedding:0.6b` | 1,4 artículos/s (~16 días) y no acertó más en la prueba | 0,64 GB |
+| Chat | `qwen2.5:3b` | lee 66 tokens/s, escribe ~10 tokens/s → **~27 s por respuesta** | 2 GB |
+| Chat | `qwen3:4b` | lee 49 tokens/s, escribe 8 tokens/s (más lento) | 2,5 GB |
+| Índice vectorial | 2 M artículos × 384 dimensiones int8 | ~1,2 s por búsqueda | ~0,7 GB |
+
+En la prueba de calidad (10 preguntas parafraseadas sobre 410 artículos de matemáticas),
+embeddinggemma encontró el artículo correcto entre los 5 primeros en 9/10 casos, con 256 a 768
+dimensiones; 384 es un buen equilibrio entre acierto y RAM.
+
+**Qwen:** el modelo de chat por defecto ya es Qwen (`qwen2.5:7b`). Los Qwen3 "piensan" antes de
+responder; el sistema les pide no hacerlo (`think: false`), pero con `qwen3:4b` el razonamiento se
+coló en la respuesta durante las pruebas, así que se recomienda qwen2.5 o una variante "instruct" de Qwen3.
+
+**Vectorizar toda la Wikipedia toma tiempo** (días en CPU, horas con GPU), pero no hay que
+esperar: se hace en segundo plano, de los artículos más extensos a los más cortos, la búsqueda
+semántica mejora a medida que avanza y se pausa sola mientras alguien usa el chat para no
+quitarle velocidad. También se puede adelantar con `python -m wikichat embed`.
+
+## Imágenes
+
+Las imágenes vienen del `.zim`. Hay tres versiones de la Wikipedia en español:
+
+| Versión | Tamaño | Imágenes |
+|---|---|---|
+| `wikipedia_es_all_nopic` | 11 GB | ninguna |
+| `wikipedia_es_all_mini` | 3,5 GB | solo la introducción de cada artículo |
+| `wikipedia_es_all_maxi` | 38 GB | todas (en miniatura, webp) |
+
+Con la versión **maxi**, el importador guarda hasta 6 imágenes por artículo con su pie de foto,
+descartando íconos y fórmulas. Las imágenes no se copian: se leen del `.zim` al mostrarlas, así
+que hay que conservarlo (si lo mueves, indica la nueva ruta en `zim_path`). Debajo de cada
+respuesta, el chat muestra las imágenes de los artículos usados como fuente.
+
+Para artículos que se actualizan después por la API se conservan las imágenes del `.zim`, y si
+no tenía ninguna se guarda la imagen principal del artículo: se descarga la primera vez que se
+muestra y queda guardada para usarla sin conexión.
 
 ## Puesta en marcha
 
 ```bash
-pip install libzim
+pip install -r requirements.txt
 cp config.example.json config.json
 
-# 1. Descarga el .zim más reciente "all_nopic" (texto completo, sin imágenes):
-#    https://download.kiwix.org/zim/wikipedia/  →  wikipedia_es_all_nopic_AAAA-MM.zim
-# 2. Impórtalo (estimado 1–2 h con 4 núcleos; si se interrumpe, repite el comando y continúa):
-python -m wikichat import-zim wikipedia_es_all_nopic_2026-08.zim
+# 1. Descarga el .zim más reciente desde https://download.kiwix.org/zim/wikipedia/
+#    (maxi si quieres imágenes, nopic si no)
+# 2. Impórtalo (estimado 1–2 h con 4 núcleos para nopic; si se interrumpe, repite el comando):
+python -m wikichat import-zim wikipedia_es_all_maxi_2026-05.zim
 
-# 3. Inicia el chat; se actualiza solo en segundo plano cada 6 h:
-python -m wikichat serve        # http://127.0.0.1:8080
+# 3. Inicia el chat: se actualiza solo y vectoriza en segundo plano.
+python -m wikichat serve        # http://127.0.0.1:8800
 ```
 
-La primera actualización tras importar un `.zim` de más de un mes hace la **puesta al
-día**: unas 40 000 consultas para revisar ~2 M artículos más la descarga de los que
-cambiaron. Puede tardar horas, pero corre en segundo plano, se reanuda sola y el chat
-funciona mientras tanto. Cuanto más reciente sea el `.zim`, menos trabajo.
+La primera actualización tras importar un `.zim` de más de un mes hace la **puesta al día**:
+unas 40 000 consultas para revisar ~2 M artículos, más la descarga de los que cambiaron. Puede
+tardar horas, pero corre en segundo plano, se reanuda sola y el chat funciona mientras tanto.
+Cuanto más reciente sea el `.zim`, menos trabajo.
 
 Otros comandos:
 
 ```bash
 python -m wikichat sync                    # actualizar ahora (útil con cron / Programador de tareas)
+python -m wikichat embed [--max N]         # adelantar la vectorización
 python -m wikichat ask "¿Cuándo se fundó Antigua Guatemala?"
-python -m wikichat search lago atitlan     # búsqueda tipo Kiwix, sin LLM
+python -m wikichat search lago atitlan     # búsqueda sin LLM
 python -m wikichat stats
-python -m wikichat serve --no-update       # modo 100 % offline
+python -m wikichat serve --no-update       # sin conexión a Wikipedia
 ```
 
 ## Configuración (`config.json`)
 
 | Clave | Para qué sirve |
 |---|---|
-| `api_url` | API de la wiki (por defecto Wikipedia en español). |
-| `user_agent` | Wikimedia exige un User-Agent identificable; sin él responde 429. |
+| `api_url`, `user_agent` | API de la wiki y User-Agent identificable (Wikimedia lo exige; sin él responde 429). |
 | `track_all_changes` | `true` (Wikipedia completa): sigue cualquier artículo que cambie, incluidos los nuevos. `false`: solo los que ya tienes y los de `seed_categories` / `seed_titles`. |
 | `skip_bot_edits` | Ignora ediciones de bots (casi siempre mantenimiento), reduce mucho las descargas. |
 | `seed_categories`, `category_depth`, `seed_titles` | Para copiar solo un tema en vez de toda la wiki (con `track_all_changes: false`, sin `.zim`). |
-| `update_interval_hours` | Cada cuánto actualiza el servidor en segundo plano. |
-| `request_delay_seconds` | Pausa entre peticiones a Wikipedia (sé amable con sus servidores). |
-| `chat_model`, `ollama_url`, `top_k` | Modelo local y cuántos fragmentos se le pasan como contexto. |
+| `update_interval_hours`, `request_delay_seconds` | Frecuencia de actualización y pausa entre peticiones a Wikipedia. |
+| `llm_backend`, `llm_url`, `llm_api_key` | `ollama` o `openai` (servidor compatible) y su dirección. |
+| `chat_model`, `top_k` | Modelo de chat y cuántos fragmentos recibe como contexto (más = respuestas más completas pero más lentas en CPU). |
+| `embed_model` | Modelo de embeddings; vacío desactiva la búsqueda semántica. |
+| `embed_dims`, `embed_chars` | Dimensiones guardadas (RAM del índice) y caracteres de cada artículo que se vectorizan. |
+| `embed_doc_template`, `embed_query_prefix` | Formato que espera el modelo de embeddings (los valores por defecto son los de embeddinggemma; para otros modelos consulta su documentación). Si cambias de modelo o de dimensiones, borra la tabla `page_vectors` para volver a vectorizar. |
+| `zim_path` | Ruta del `.zim` si lo moviste después de importarlo (para las imágenes). |
 
 ## Cómo se arma una respuesta
 
-1. Los artículos se guardan como texto plano dividido por secciones (~1 500 caracteres);
-   se omiten referencias, enlaces externos, cajas de navegación, etc. Las fórmulas se
-   guardan como TeX.
-2. La pregunta se reduce a palabras clave (sin acentos ni palabras vacías) y SQLite FTS5
-   busca con BM25 los fragmentos más relevantes, con más peso en título y sección. Primero
-   exige todas las palabras y, si no alcanza, acepta cualquiera.
-3. Esos fragmentos van al LLM con la instrucción de responder solo con ellos y citar los
-   artículos; la interfaz muestra las fuentes usadas.
+1. Los artículos se guardan como texto plano dividido por secciones (~1 500 caracteres); se
+   omiten referencias, enlaces externos y cajas de navegación. Las fórmulas se guardan como TeX.
+2. **Búsqueda por palabras:** la pregunta se reduce a palabras clave (sin acentos ni palabras
+   vacías) y SQLite FTS5 busca con BM25, primero exigiendo todas las palabras.
+3. **Búsqueda semántica:** la pregunta se convierte en un vector y se compara con el vector de
+   cada artículo (título + introducción), así encuentra artículos aunque no compartan palabras
+   ("pájaro símbolo nacional" → Quetzal). De cada artículo se toma el fragmento que mejor
+   coincide.
+4. Ambas listas se combinan con *Reciprocal Rank Fusion*; si la búsqueda por palabras no encontró
+   fragmentos con todas las palabras, la semántica pesa más. Si las palabras clave son exactamente
+   el título de un artículo ("¿Qué es el oro?" → Oro), su introducción va primero.
+5. Los mejores fragmentos van al modelo de chat con la instrucción de responder solo con ellos y
+   citar los artículos; la interfaz muestra las fuentes y sus imágenes.
 
 ## Pruebas
 
 ```bash
-python -m unittest -v      # la prueba del importador se omite si no está libzim
+python -m unittest -v      # no necesita modelos; la prueba del importador se omite sin libzim
 ```
 
 ## Límites conocidos
@@ -108,6 +175,8 @@ python -m unittest -v      # la prueba del importador se omite si no está libzi
   reciente o reimporta uno nuevo de vez en cuando para recogerlos.
 - Con `skip_bot_edits` las correcciones hechas por bots no se descargan hasta la siguiente
   edición humana del artículo.
-- La búsqueda es por palabras, no entiende sinónimos; el siguiente paso natural es añadir
-  embeddings locales para búsqueda híbrida.
+- La búsqueda semántica usa un vector por artículo (título + introducción): encuentra bien de
+  qué artículo se trata, pero dentro del artículo el fragmento se elige por palabras.
+- Las imágenes se muestran junto a la respuesta, pero el modelo no las "ve"; para eso haría falta
+  un modelo con visión.
 - El contenido de Wikipedia es CC BY-SA: si publicas respuestas, cita los artículos.

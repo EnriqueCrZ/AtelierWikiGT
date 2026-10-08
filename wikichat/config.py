@@ -12,11 +12,22 @@ DEFAULTS = {
     "skip_bot_edits": True,
     "update_interval_hours": 12,
     "request_delay_seconds": 0.5,
-    "ollama_url": "http://localhost:11434",
+    # Modelos locales: "ollama" o "openai" (cualquier servidor compatible: llama.cpp,
+    # LM Studio, vLLM…; en ese caso llm_url termina en /v1).
+    "llm_backend": "ollama",
+    "llm_url": "http://localhost:11434",
+    "llm_api_key": "",
     "chat_model": "qwen2.5:7b",
-    "top_k": 6,
+    "top_k": 4,
+    # Búsqueda semántica (vacío desactiva). Los prefijos dependen del modelo.
+    "embed_model": "embeddinggemma",
+    "embed_dims": 384,
+    "embed_chars": 400,
+    "embed_doc_template": "title: {title} | text: {text}",
+    "embed_query_prefix": "task: search result | query: ",
+    "zim_path": "",
     "host": "127.0.0.1",
-    "port": 8080,
+    "port": 8800,
 }
 
 

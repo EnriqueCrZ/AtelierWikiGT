@@ -1,0 +1,4 @@
+# Búsqueda semántica (opcional: sin numpy se usa solo la búsqueda por palabras)
+numpy>=1.24
+# Importar archivos .zim y mostrar sus imágenes
+libzim>=3.4

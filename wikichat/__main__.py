@@ -4,10 +4,9 @@ import json
 import logging
 import sys
 
-from . import db, sync
+from . import db, sync, vectors
 from .config import load_config
-from .llm import retrieve_for, stream_answer
-from .retrieval import search
+from .llm import retrieve, stream_answer
 
 
 def main(argv=None):
@@ -25,6 +24,8 @@ def main(argv=None):
     a.add_argument("question", nargs="+")
     q = sub.add_parser("search", help="búsqueda sin LLM (como Kiwix)")
     q.add_argument("query", nargs="+")
+    e = sub.add_parser("embed", help="calcula los embeddings pendientes (búsqueda semántica)")
+    e.add_argument("--max", type=int, help="máximo de artículos en esta ejecución")
     sub.add_parser("stats", help="estado de la copia local")
     args = p.parse_args(argv)
 
@@ -46,17 +47,31 @@ def main(argv=None):
         import_zim(conn, args.path, args.workers)
     elif args.cmd == "stats":
         print(json.dumps(db.stats(conn), ensure_ascii=False, indent=2))
+    elif args.cmd == "embed":
+        if not vectors.enabled(cfg):
+            raise SystemExit("Configura embed_model en config.json e instala numpy")
+        n = vectors.embed_pending(conn, cfg, max_pages=args.max)
+        print(f"{n} artículos vectorizados")
     elif args.cmd == "search":
-        for r in search(conn, " ".join(args.query), cfg["top_k"]):
+        for r in retrieve(conn, cfg, " ".join(args.query), _index(conn, cfg)):
             print(f"\n## {r['title']} — {r['section']}\n{r['text'][:400]}")
     elif args.cmd == "ask":
-        messages = [{"role": "user", "content": " ".join(args.question)}]
-        sources = retrieve_for(conn, messages, cfg["top_k"])
+        question = " ".join(args.question)
+        messages = [{"role": "user", "content": question}]
+        sources = retrieve(conn, cfg, question, _index(conn, cfg))
         for text in stream_answer(cfg, messages, sources):
             sys.stdout.write(text)
             sys.stdout.flush()
         print("\n\nFuentes:", ", ".join(sorted({s["title"] for s in sources})) or "ninguna")
     return 0
+
+
+def _index(conn, cfg):
+    if not vectors.enabled(cfg):
+        return None
+    index = vectors.VectorIndex(cfg["embed_dims"])
+    index.refresh(conn)
+    return index
 
 
 if __name__ == "__main__":
