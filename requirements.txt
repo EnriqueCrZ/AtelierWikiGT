@@ -2,3 +2,5 @@
 numpy>=1.24
 # Importar archivos .zim y mostrar sus imágenes
 libzim>=3.4
+# Descomprimir Ollama si `setup` lo descarga
+zstandard>=0.22

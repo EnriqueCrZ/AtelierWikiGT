@@ -13,6 +13,8 @@
   "llm_backend": "ollama",
   "llm_url": "http://localhost:11434",
   "llm_api_key": "",
+  "manage_ollama": false,
+  "ollama_dir": "data/ollama",
   "chat_model": "qwen2.5:7b",
   "top_k": 4,
   "embed_model": "embeddinggemma",

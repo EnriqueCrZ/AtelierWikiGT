@@ -590,3 +590,133 @@ class ZimImportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Instalación: hardware, perfil y Ollama ---------------------------------------------
+
+from wikichat import hardware, ollama_manager  # noqa: E402
+
+GiB = 1024 ** 3
+
+
+def hw_with(ram_gb, cores=4, gpus=()):
+    return {"arch": "amd64", "cpu": "x", "cores": cores, "avx2": True, "avx512": False,
+            "ram_total": ram_gb * GiB, "ram_free": ram_gb * GiB, "disk_free": 100 * GiB,
+            "gpus": list(gpus)}
+
+
+class HardwareTest(unittest.TestCase):
+    def test_parsers(self):
+        self.assertEqual(hardware.parse_meminfo("MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n"),
+                         (16384000 * 1024, 8192000 * 1024))
+        self.assertEqual(hardware.parse_nvidia_smi("NVIDIA GeForce RTX 3060, 12288\n"),
+                         [{"vendor": "nvidia", "name": "NVIDIA GeForce RTX 3060", "vram": 12 * GiB}])
+        self.assertEqual(hardware.parse_rocm_smi("device,VRAM Total Memory (B),VRAM Total Used Memory (B)\n"
+                                                 "card0,17163091968,123\n")[0]["vram"], 17163091968)
+        gpus = hardware.parse_lspci(
+            "00:02.0 VGA compatible controller: Intel Corporation UHD Graphics 620\n"
+            "01:00.0 3D controller: NVIDIA Corporation GP108M [GeForce MX150]\n"
+            "00:1f.3 Audio device: Intel Corporation Sunrise Point\n")
+        self.assertEqual([g["vendor"] for g in gpus], ["intel", "nvidia"])
+
+    def test_profiles(self):
+        self.assertEqual(hardware.choose_profile(hw_with(6))["chat_model"], "qwen2.5:1.5b")
+        self.assertEqual(hardware.choose_profile(hw_with(8))["chat_model"], "qwen2.5:3b")
+        self.assertEqual(hardware.choose_profile(hw_with(16, cores=4))["chat_model"], "qwen2.5:3b")
+        self.assertEqual(hardware.choose_profile(hw_with(16, cores=8))["chat_model"], "qwen2.5:7b")
+        self.assertEqual(hardware.choose_profile(hw_with(4))["top_k"], 3)
+        gpu = hardware.choose_profile(hw_with(32, gpus=[{"vendor": "nvidia", "name": "x", "vram": 8 * GiB}]))
+        self.assertEqual((gpu["name"], gpu["chat_model"], gpu["rewrite_followups"]), ("gpu", "qwen2.5:7b", True))
+        six = hardware.choose_profile(hw_with(32, gpus=[{"vendor": "nvidia", "name": "x", "vram": 6 * GiB}]))
+        self.assertEqual(six["chat_model"], "qwen2.5:3b")
+        self.assertEqual(hardware.choose_profile(hw_with(10, cores=8))["chat_model"], "qwen2.5:7b")
+        big = hardware.choose_profile(hw_with(32, gpus=[{"vendor": "nvidia", "name": "x", "vram": 24 * GiB}]))
+        self.assertEqual(big["chat_model"], "qwen2.5:14b")
+        # Una GPU Intel integrada (sin VRAM medida) no cuenta como GPU para los modelos.
+        igpu = hardware.choose_profile(hw_with(16, gpus=[{"vendor": "intel", "name": "x", "vram": 0}]))
+        self.assertEqual(igpu["name"], "cpu")
+        self.assertEqual(hardware.smaller_chat_model("qwen2.5:7b"), "qwen2.5:3b")
+        self.assertEqual(hardware.smaller_chat_model("qwen2.5:1.5b"), "qwen2.5:1.5b")
+
+    def test_package_filter_keeps_only_needed_gpu_libraries(self):
+        member = lambda n: type("M", (), {"name": n})()
+        names = ["bin/ollama", "lib/ollama/libggml-cpu-haswell.so", "lib/ollama/cuda_v12/libggml-cuda.so",
+                 "lib/ollama/vulkan/libggml-vulkan.so", "lib/ollama/mlx_cuda_v13/x.so"]
+        keep = lambda gpus: [n for n in names if ollama_manager._keep(member(n), gpus)]
+        self.assertEqual(keep([]), names[:2])
+        self.assertEqual(keep([{"vendor": "nvidia"}]), names[:3] + [names[4]])
+        self.assertEqual(keep([{"vendor": "intel"}]), names[:2] + [names[3]])
+
+    def test_serve_without_managed_ollama_does_nothing(self):
+        self.assertIsNone(ollama_manager.ensure_running(dict(DEFAULTS)))
+
+
+class FakeOllama(BaseHTTPRequestHandler):
+    """Lo mínimo de la API de Ollama que usa `setup`."""
+    pulled = set()
+
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/api/version":
+            self._json({"version": "0.0-prueba"})
+        elif self.path == "/api/tags":
+            self._json({"models": [{"name": n} for n in self.pulled]})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/api/pull":
+            self.pulled.add(body["model"])
+            self.send_response(200)
+            self.end_headers()
+            for ev in ({"status": "pulling", "total": 100, "completed": 50},
+                       {"status": "pulling", "total": 100, "completed": 100}, {"status": "success"}):
+                self.wfile.write(json.dumps(ev).encode() + b"\n")
+        elif self.path == "/api/embed":
+            self._json({"embeddings": [[1.0] * 8 for _ in body["input"]]})
+        elif self.path == "/api/chat":
+            # El 3b lee 40 tokens/s y escribe 10: 1500/40 + 200/10 ≈ 58 s por respuesta (aceptable).
+            # El 7b lee 5 tokens/s: más de 5 minutos, demasiado lento.
+            slow = "7b" in body["model"]
+            self._json({"message": {"content": "ok"}, "prompt_eval_count": 1000,
+                        "prompt_eval_duration": (200 if slow else 25) * 1e9,
+                        "eval_count": 80, "eval_duration": 8e9})
+
+
+class SetupTest(unittest.TestCase):
+    def test_setup_uses_running_ollama_measures_and_writes_config(self):
+        from wikichat import setup as setup_mod
+        FakeOllama.pulled = set()
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeOllama)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{httpd.server_port}"
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "config.json")
+        with open(path, "w") as f:
+            json.dump({"db_path": os.path.join(tmp, "data", "wiki.db"), "port": 9999}, f)
+        many_cores = hw_with(32, cores=16)
+        try:
+            with mock.patch.object(ollama_manager, "SYSTEM_URL", url), \
+                 mock.patch.object(hardware, "detect", return_value=many_cores), \
+                 mock.patch("builtins.print"):
+                setup_mod.run(path, yes=True)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        with open(path) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["port"], 9999)  # lo que el usuario ya tenía se respeta
+        self.assertEqual(cfg["llm_url"], url)
+        self.assertFalse(cfg["manage_ollama"])
+        # Empezó con el 7b (16 núcleos, 32 GB), lo midió lento y bajó al 3b.
+        self.assertEqual(cfg["chat_model"], "qwen2.5:3b")
+        self.assertEqual(FakeOllama.pulled, {"embeddinggemma", "qwen2.5:7b", "qwen2.5:3b"})
+        self.assertFalse(cfg["rewrite_followups"])  # 400/40 + 30/10 = 13 s > 6 s
+        self.assertTrue(os.path.exists(os.path.join(tmp, "data", "hardware.json")))

@@ -17,6 +17,9 @@ DEFAULTS = {
     "llm_backend": "ollama",
     "llm_url": "http://localhost:11434",
     "llm_api_key": "",
+    # Ollama descargado y administrado por `setup` (se inicia y detiene con `serve`).
+    "manage_ollama": False,
+    "ollama_dir": "data/ollama",
     "chat_model": "qwen2.5:7b",
     "top_k": 4,
     # Búsqueda semántica (vacío desactiva). Los prefijos dependen del modelo.

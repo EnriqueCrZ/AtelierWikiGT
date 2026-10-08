@@ -52,21 +52,40 @@ Las conversaciones guardadas no se tocan.
 
 ## ¿Qué necesito instalar?
 
-| Pieza | Para qué | ¿Obligatoria? |
-|---|---|---|
-| Python 3.10+ | todo el sistema | sí |
-| `pip install -r requirements.txt` | `libzim` (importar el `.zim` y mostrar imágenes) y `numpy` (búsqueda semántica) | sí para importar; numpy opcional |
-| Un servidor de modelos local | redactar respuestas y búsqueda semántica | no: sin él funciona como un buscador tipo Kiwix |
+Solo Python 3.10+ en Linux. El resto lo prepara `python -m wikichat setup`:
 
-**Servidor de modelos:** el más sencillo es [Ollama](https://ollama.com), pero sirve cualquiera compatible con la
-API de OpenAI (llama.cpp `llama-server`, LM Studio, vLLM, Jan). Se necesitan dos modelos:
+1. **Detecta el hardware:** CPU y sus instrucciones (AVX2/AVX-512), RAM, GPU NVIDIA (`nvidia-smi`)
+   o AMD (`rocm-smi`) con su memoria, y disco libre.
+2. **Prepara Ollama:** usa el que ya esté corriendo; si no hay, lo descarga en `data/ollama`
+   (~1,4 GB de descarga; sin GPU solo se extraen ~60 MB, porque las librerías de GPU se omiten
+   si no hay una GPU que las use). Ese Ollama "administrado" corre en su propio puerto (11435)
+   y se inicia y se detiene junto con `serve`; no se instala nada en el sistema.
+3. **Elige y descarga los modelos** según el hardware (ver tabla).
+4. **Mide la velocidad real** en ese equipo. Si una respuesta tardaría más de 90 s, prueba un
+   modelo más chico, y activa la reescritura de preguntas de seguimiento solo si tarda menos de 6 s.
+5. **Escribe `config.json`** respetando lo que ya tuvieras configurado, y guarda el detalle en
+   `data/hardware.json`.
 
-```bash
-ollama pull embeddinggemma   # embeddings, 621 MB: búsqueda semántica
-ollama pull qwen2.5:7b       # chat, 4,7 GB (con poca RAM: qwen2.5:3b, 1,9 GB)
-```
+| Equipo | Modelo de chat inicial | Fragmentos de contexto | Reescribir seguimientos |
+|---|---|---|---|
+| Sin GPU, < 7 GB de RAM | `qwen2.5:1.5b` | 3 | según la medición |
+| Sin GPU, ≥ 7 GB (o menos de 8 núcleos) | `qwen2.5:3b` | 3 con < 8 GB, si no 4 | según la medición |
+| Sin GPU, ≥ 10 GB y ≥ 8 núcleos | `qwen2.5:7b` | 4 | según la medición |
+| GPU con 6 GB | `qwen2.5:3b` | 6 | según la medición |
+| GPU con 8–10 GB | `qwen2.5:7b` | 6 | según la medición |
+| GPU con ≥ 11 GB | `qwen2.5:14b` | 6 | según la medición |
 
-Con llama.cpp, LM Studio u otro servidor compatible con OpenAI:
+En todos los casos los embeddings usan `embeddinggemma` con 384 dimensiones. Si ya hay vectores
+calculados, `setup` no cambia las dimensiones (habría que volver a vectorizar todo). Puedes repetir
+`setup` cuando quieras, por ejemplo después de cambiar de equipo o añadir una GPU: no vuelve a
+descargar lo que ya está.
+
+Medido en la máquina de pruebas (4 núcleos, sin GPU), `setup` desde cero tardó 2 min 44 s:
+descargó Ollama y los dos modelos, eligió `qwen2.5:3b` (~50 s por respuesta) y estimó ~84 h para
+vectorizar toda la Wikipedia en segundo plano.
+
+**¿Otro servidor de modelos?** Sirve cualquiera compatible con la API de OpenAI (llama.cpp
+`llama-server`, LM Studio, vLLM, Jan) configurándolo a mano, sin `setup`:
 
 ```json
 "llm_backend": "openai", "llm_url": "http://localhost:8080/v1"
@@ -145,12 +164,16 @@ Cómo se mantiene el contexto sin que el modelo reciba la conversación entera:
 pip install -r requirements.txt
 cp config.example.json config.json
 
-# 1. Descarga el .zim más reciente desde https://download.kiwix.org/zim/wikipedia/
-#    (maxi si quieres imágenes, nopic si no)
-# 2. Impórtalo (estimado 1–2 h con 4 núcleos para nopic; si se interrumpe, repite el comando):
+# 1. Prepara Ollama y los modelos para este equipo (pregunta antes de descargar; -y para no preguntar):
+python -m wikichat setup
+
+# 2. Descarga el .zim más reciente desde https://download.kiwix.org/zim/wikipedia/
+#    (maxi si quieres imágenes, nopic si no) e impórtalo
+#    (estimado 1–2 h con 4 núcleos para nopic; si se interrumpe, repite el comando):
 python -m wikichat import-zim wikipedia_es_all_maxi_2026-05.zim
 
-# 3. Inicia el chat: se actualiza solo y vectoriza en segundo plano.
+# 3. Inicia el chat: arranca Ollama, se actualiza por Internet si hay conexión y vectoriza
+#    en segundo plano.
 python -m wikichat serve        # http://127.0.0.1:8800
 ```
 
@@ -180,6 +203,7 @@ python -m wikichat serve --no-update       # sin conexión a Wikipedia
 | `seed_categories`, `category_depth`, `seed_titles` | Para copiar solo un tema en vez de toda la wiki (con `track_all_changes: false`, sin `.zim`). |
 | `update_interval_hours`, `request_delay_seconds` | Frecuencia de actualización y pausa entre peticiones a Wikipedia. |
 | `llm_backend`, `llm_url`, `llm_api_key` | `ollama` o `openai` (servidor compatible) y su dirección. |
+| `manage_ollama`, `ollama_dir` | Si `serve` debe iniciar y detener el Ollama que descargó `setup`, y dónde está. |
 | `chat_model`, `top_k` | Modelo de chat y cuántos fragmentos recibe como contexto (más = respuestas más completas pero más lentas en CPU). |
 | `embed_model` | Modelo de embeddings; vacío desactiva la búsqueda semántica. |
 | `embed_dims`, `embed_chars` | Dimensiones guardadas (RAM del índice) y caracteres de cada artículo que se vectorizan. |

@@ -14,6 +14,9 @@ def main(argv=None):
     p.add_argument("-c", "--config", default="config.json")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
+    st = sub.add_parser("setup", help="detecta el hardware, prepara Ollama y los modelos, y configura")
+    st.add_argument("-y", "--yes", action="store_true", help="no preguntar antes de descargar")
+    st.add_argument("--no-benchmark", action="store_true", help="no medir la velocidad")
     sub.add_parser("sync", help="descarga/actualiza la copia local")
     z = sub.add_parser("import-zim", help="importa un .zim de Kiwix como base inicial")
     z.add_argument("path")
@@ -35,6 +38,10 @@ def main(argv=None):
     )
     cfg = load_config(args.config)
 
+    if args.cmd == "setup":
+        from .setup import run
+        run(args.config, yes=args.yes, benchmark=not args.no_benchmark)
+        return 0
     if args.cmd == "serve":
         from .server import serve
         return serve(cfg, auto_update=not args.no_update)

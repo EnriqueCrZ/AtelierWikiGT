@@ -237,6 +237,8 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
 
 
 def serve(cfg, auto_update=True):
+    from . import ollama_manager
+    manager = ollama_manager.ensure_running(cfg)  # solo si setup dejó Ollama administrado
     db_lock = threading.Lock()
     index = vectors.VectorIndex(cfg["embed_dims"]) if vectors.enabled(cfg) else None
     if cfg.get("embed_model") and index is None:
@@ -251,3 +253,6 @@ def serve(cfg, auto_update=True):
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        if manager:
+            manager.stop()
