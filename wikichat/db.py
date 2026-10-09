@@ -91,7 +91,34 @@ def connect(path):
     conn.execute("PRAGMA synchronous=NORMAL")
     _migrate(conn)
     conn.executescript(SCHEMA)
+    _fill_missing_sizes(conn)
     return conn
+
+
+def _fill_missing_sizes(conn):
+    """Calcula el tamaño de los artículos que no lo tienen. En bases creadas antes de existir
+    la columna quedó vacío, y la vectorización (que va de mayor a menor) no los encontraba:
+    se quedaba en 0 artículos sin avisar."""
+    if not conn.execute("SELECT 1 FROM pages WHERE size IS NULL LIMIT 1").fetchone():
+        return
+    import logging
+    log = logging.getLogger("wikichat.db")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not conn.execute("SELECT 1 FROM pages WHERE size IS NULL LIMIT 1").fetchone():
+            conn.commit()  # otra conexión ya lo hizo mientras esperábamos
+            return
+        log.info("Calculando el tamaño de los artículos (solo esta vez; con toda la Wikipedia "
+                 "puede tardar unos minutos)…")
+        t = time.time()
+        cur = conn.execute(
+            "UPDATE pages SET size = COALESCE((SELECT SUM(length(text)) FROM chunks "
+            "WHERE chunks.page = pages.id), 0) WHERE size IS NULL")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    log.info("Tamaño calculado para %d artículos en %.0f s", cur.rowcount, time.time() - t)
 
 
 def _migrate(conn):

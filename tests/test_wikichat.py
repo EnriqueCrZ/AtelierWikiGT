@@ -343,6 +343,32 @@ class SemanticAndImagesTest(unittest.TestCase):
         pics = images.rank(self.conn, dict(self.cfg, embed_model=""), [pid], "atardecer en Atitlán")
         self.assertEqual(pics[0]["caption"], "Atardecer en el lago Atitlán")
 
+    def test_embedding_runs_while_a_long_update_is_in_progress(self):
+        # Lo que pasó con la Wikipedia completa: una puesta al día de horas y artículos con el
+        # tamaño vacío (base anterior a esa columna). La vectorización igual debe avanzar.
+        from wikichat import server
+        self.conn.execute("UPDATE pages SET size = NULL")
+        self.conn.commit()
+        self.conn = db.connect(self.cfg["db_path"])  # al reconectar se calculan los tamaños
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM pages WHERE size IS NULL").fetchone())
+        cfg = dict(self.cfg, embed_model="fake")
+        stop_update = threading.Event()
+        endless_update = lambda conn, cfg: stop_update.wait(30) or True
+        with mock.patch.object(backends, "embed", side_effect=fake_embed), \
+             mock.patch.object(backends, "preload"), \
+             mock.patch.object(sync, "try_update", side_effect=endless_update):
+            index = vectors.VectorIndex(8)
+            stop = server.start_background(cfg, index, auto_update=True)
+            try:
+                for _ in range(100):
+                    if len(index) == 3:
+                        break
+                    time.sleep(0.05)
+            finally:
+                stop.set()
+                stop_update.set()
+        self.assertEqual(len(index), 3)
+
     def test_remote_image_is_cached_and_offline_returns_none(self):
         pid = db.upsert_page(self.conn, "Lago", None, "Lago.", images=[("http://127.0.0.1:9/x.jpg", "x")])
         image_id = images.for_pages(self.conn, [pid])[0]["id"]

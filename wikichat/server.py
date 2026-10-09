@@ -35,7 +35,7 @@ class Activity:
 
 
 def start_background(cfg, index, auto_update=True, activity=None):
-    """Hilo que carga el índice semántico y, si se pide, actualiza la wiki cada N horas y
+    """Hilos de fondo: precarga los modelos, actualiza la wiki cada N horas (si se pide) y
     calcula los embeddings que falten. Cualquier fallo se registra y se ignora."""
     stop = threading.Event()
 
@@ -47,31 +47,52 @@ def start_background(cfg, index, auto_update=True, activity=None):
         except backends.BackendUnavailable as e:
             log.warning("No se pudieron precargar los modelos: %s", e)
 
-    def loop():
+    changed = threading.Event()  # la actualización trajo artículos nuevos o cambiados
+
+    def update_loop():
+        """Actualiza la wiki cada N horas. Va en su propio hilo: una puesta al día puede durar
+        horas y no debe frenar la vectorización (antes la vectorización esperaba a que terminara)."""
         conn = db.connect(cfg["db_path"])
-        if index is not None:
-            n = index.refresh(conn)
-            log.info("Índice semántico: %d artículos cargados", n)
         while not stop.is_set():
-            if auto_update:
-                ok = sync.try_update(conn, cfg)
-                log.info("Actualización %s", "completada" if ok else "omitida (sin conexión)")
-            if index is not None:
-                try:
-                    # Por tandas, refrescando el índice para que la búsqueda mejore mientras avanza.
-                    while not stop.is_set() and vectors.embed_pending(
-                            conn, cfg, max_pages=2000, stop=stop,
-                            pause=activity.busy if activity else None):
-                        index.refresh(conn)
-                except backends.BackendUnavailable as e:
-                    log.warning("Embeddings pendientes, el modelo no responde: %s", e)
-                index.refresh(conn)
-            if not auto_update:
-                break
+            ok = sync.try_update(conn, cfg)
+            log.info("Actualización %s", "completada" if ok else "omitida (sin conexión)")
+            changed.set()
             stop.wait(cfg["update_interval_hours"] * 3600)
 
+    def embed_loop():
+        """Vectoriza lo que falte, por tandas, refrescando el índice para que la búsqueda
+        semántica mejore mientras avanza. Se pausa mientras alguien usa el chat."""
+        conn = db.connect(cfg["db_path"])
+        n = index.refresh(conn)
+        total = conn.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        log.info("Índice semántico: %d de %d artículos vectorizados", n, total)
+        t0, done = time.time(), 0
+        while not stop.is_set():
+            try:
+                batch = vectors.embed_pending(conn, cfg, max_pages=2000, stop=stop,
+                                              pause=activity.busy if activity else None)
+            except backends.BackendUnavailable as e:
+                log.warning("Embeddings en pausa, el modelo no responde (se reintenta en 1 min): %s", e)
+                stop.wait(60)
+                continue
+            index.refresh(conn)
+            if batch:
+                done += batch
+                rate = done / max(time.time() - t0, 1e-9)
+                left = total - len(index)
+                log.info("Búsqueda semántica: %d de %d artículos (%.0f/s, faltan ~%.1f h)",
+                         len(index), total, rate, left / max(rate, 1e-9) / 3600)
+            else:
+                # Al día: espera a que la actualización traiga cambios (o revisa cada 10 min).
+                changed.wait(600)
+                changed.clear()
+                total = conn.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+
     threading.Thread(target=warm_up, daemon=True, name="precarga").start()
-    threading.Thread(target=loop, daemon=True, name="background").start()
+    if auto_update:
+        threading.Thread(target=update_loop, daemon=True, name="actualizacion").start()
+    if index is not None:
+        threading.Thread(target=embed_loop, daemon=True, name="embeddings").start()
     return stop
 
 
