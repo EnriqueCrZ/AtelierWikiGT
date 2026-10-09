@@ -282,6 +282,21 @@ class SemanticAndImagesTest(unittest.TestCase):
         db.upsert_page(self.conn, "Maíz transgénico", None, "El maíz maíz maíz maíz modificado. " * 9)
         self.assertEqual(retrieve(self.conn, self.cfg, "¿Qué es el maíz?")[0]["title"], "Maíz")
 
+    def test_question_about_named_article_gets_its_introduction(self):
+        from wikichat.retrieval import entity_intros
+        db.upsert_page(self.conn, "Tikal", None,
+                       "Tikal es una antigua ciudad de la civilización maya.\n== Templos ==\n" + "Templo IV. " * 200)
+        db.upsert_page(self.conn, "La Gioconda", None, "La Gioconda es un óleo de Leonardo da Vinci.")
+        db.upsert_page(self.conn, "Civilización", None, "Una civilización es una sociedad compleja.")
+        self.conn.execute("INSERT INTO redirects (title_key, target) VALUES ('mona lisa', 'La Gioconda')")
+        intros = lambda q: [c["title"] for c in entity_intros(self.conn, q)]
+        # Nombres propios (con mayúscula), no palabras comunes como "civilización".
+        self.assertEqual(intros("¿Qué civilización construyó Tikal?"), ["Tikal"])
+        self.assertEqual(entity_intros(self.conn, "¿Qué civilización construyó Tikal?")[0]["section"], "Introducción")
+        self.assertEqual(intros("¿Quién pintó la Mona Lisa?"), ["La Gioconda"])  # por redirección
+        self.assertEqual(intros("¿Qué es la civilización?"), ["Civilización"])  # la pregunta entera
+        self.assertEqual(retrieve(self.conn, self.cfg, "¿Quién pintó la Mona Lisa?")[0]["title"], "La Gioconda")
+
     def test_without_embedding_model_falls_back_to_keywords(self):
         index = vectors.VectorIndex(8)
         index.matrix = vectors.np.ones((1, 8), dtype=vectors.np.int8)
@@ -597,6 +612,7 @@ class ZimUpdateTest(unittest.TestCase):
             "Editado por internet": (long("Texto del zim nuevo"), []),
         }, assets=["_assets_/v2/igual.webp"])
         counts = import_zim(self.conn, v2, workers=1)
+        counts.pop("redirecciones", None)  # el .zim de prueba trae la de su página principal
 
         self.assertEqual(counts, {"igual": 1, "cambiado": 1, "nuevo": 1, "local más reciente": 1, "borrado": 1})
         self.assertEqual(db.page_titles(self.conn),
@@ -614,6 +630,45 @@ class ZimUpdateTest(unittest.TestCase):
             self.assertEqual(vectors.embed_pending(self.conn, self.cfg), 4)
         self.assertEqual(db.get_meta(self.conn, "rc_cursor"), "2026-02-01T00:00:00Z")
         self.assertEqual(import_zim(self.conn, v2, workers=1)["igual"], 1)  # repetir: no hace nada
+
+
+class ZimRedirectsTest(unittest.TestCase):
+    def test_redirects_imported_and_redirects_only_mode(self):
+        try:
+            from libzim.writer import Creator, Hint
+        except ImportError:
+            self.skipTest("libzim no instalado")
+        from wikichat.retrieval import entity_intros
+        from wikichat.zim_import import import_redirects, import_zim
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "r.zim")
+        make_zim(path, "2026-01-01", {"La Gioconda": ("La Gioconda es un óleo de Leonardo da Vinci. " * 10, [])})
+        # make_zim no crea redirecciones: se agregan con un segundo .zim que las incluye
+        path2 = os.path.join(tmp, "r2.zim")
+        from libzim.writer import StringProvider, Item
+
+        class Page(Item):
+            def get_path(self): return "La_Gioconda"
+            def get_title(self): return "La Gioconda"
+            def get_mimetype(self): return "text/html"
+            def get_contentprovider(self):
+                return StringProvider("<div class='mw-parser-output'><p>" + "La Gioconda es un óleo de Leonardo. " * 10 + "</p></div>")
+            def get_hints(self): return {Hint.FRONT_ARTICLE: True}
+
+        with Creator(path2).config_indexing(False, "spa") as c:
+            c.set_mainpath("La_Gioconda")
+            c.add_metadata("Date", "2026-02-01")
+            c.add_item(Page())
+            c.add_redirection("Mona_Lisa", "Mona Lisa", "La_Gioconda", {Hint.FRONT_ARTICLE: True})
+        conn = db.connect(os.path.join(tmp, "wiki.db"))
+        import_zim(conn, path, workers=1)
+        self.assertEqual(entity_intros(conn, "¿Quién pintó la Mona Lisa?"), [])
+        self.assertEqual(import_redirects(conn, path2, workers=1), 1)  # copia ya importada
+        self.assertEqual([c["title"] for c in entity_intros(conn, "¿Quién pintó la Mona Lisa?")], ["La Gioconda"])
+        conn.execute("DELETE FROM redirects")
+        counts = import_zim(conn, path2, workers=1)                  # importación normal
+        self.assertEqual(counts["redirecciones"], 1)
+        self.assertEqual(db.stats(conn)["redirects"], 1)
 
 
 class ZimImportTest(unittest.TestCase):
@@ -804,6 +859,18 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(FakeOllama.pulled, {"embeddinggemma", "qwen2.5:7b", "qwen2.5:3b"})
         self.assertFalse(cfg["rewrite_followups"])  # 400/40 + 30/10 = 13 s > 6 s
         self.assertTrue(os.path.exists(os.path.join(tmp, "data", "hardware.json")))
+
+
+class CitationCheckTest(unittest.TestCase):
+    def test_warns_only_when_every_citation_is_unsupported(self):
+        from wikichat.llm import citation_warning
+        src = [{"title": "Ciclo del mercurio"}, {"title": "Tornasol"}, {"title": "Manganato"}]
+        ok = ["El mercurio es líquido [Mercurio].", "Se pone rojo [Tornasol (sección «Aplicaciones»)].",
+              "Sin citas, no hay nada que comprobar.", "Rojo [Tornasol] y algo más [Oro]."]
+        for answer in ok:
+            self.assertIsNone(citation_warning(answer, src), answer)
+        warn = citation_warning("La capital es Ulaanbaatar [Ulaanbaatar (Mongolía)].", src)
+        self.assertIn("Ulaanbaatar (Mongolía)", warn)
 
 
 class EvaluateTest(unittest.TestCase):

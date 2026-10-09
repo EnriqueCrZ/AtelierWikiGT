@@ -23,6 +23,8 @@ def main(argv=None):
     z = sub.add_parser("import-zim", help="importa un .zim de Kiwix como base inicial")
     z.add_argument("path")
     z.add_argument("--workers", type=int, help="procesos para convertir HTML (por defecto: núcleos - 1)")
+    z.add_argument("--solo-redirecciones", action="store_true",
+                   help="solo guarda los nombres alternativos de los artículos, sin reimportarlos")
     s = sub.add_parser("serve", help="inicia la interfaz web de chat")
     s.add_argument("--no-update", action="store_true", help="no actualizar en segundo plano")
     a = sub.add_parser("ask", help="pregunta desde la terminal")
@@ -63,8 +65,11 @@ def main(argv=None):
     if args.cmd == "sync":
         return 0 if sync.try_update(conn, cfg) else 1
     if args.cmd == "import-zim":
-        from .zim_import import import_zim
-        import_zim(conn, args.path, args.workers)
+        from .zim_import import import_redirects, import_zim
+        if args.solo_redirecciones:
+            import_redirects(conn, args.path, args.workers)
+        else:
+            import_zim(conn, args.path, args.workers)
     elif args.cmd == "stats":
         print(json.dumps(db.stats(conn), ensure_ascii=False, indent=2))
     elif args.cmd == "eval":

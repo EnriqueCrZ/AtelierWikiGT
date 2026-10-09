@@ -192,6 +192,14 @@ Cómo se mantiene el contexto sin que el modelo reciba la conversación entera:
 ./wikichat.sh serve        # http://127.0.0.1:8800
 ```
 
+Los nombres alternativos de los artículos (las redirecciones del `.zim`, como "Mona Lisa" →
+"La Gioconda") se guardan al importar. Si importaste con una versión anterior que no los guardaba,
+agrégalos sin reimportar nada (tarda unos minutos):
+
+```bash
+./wikichat.sh import-zim wikipedia_es_all_maxi_AAAA-MM.zim --solo-redirecciones
+```
+
 La primera actualización tras importar un `.zim` de más de un mes hace la **puesta al día**:
 unas 40 000 consultas para revisar ~2 M artículos, más la descarga de los que cambiaron. Puede
 tardar horas, pero corre en segundo plano, se reanuda sola y el chat funciona mientras tanto.
@@ -242,10 +250,18 @@ Otros comandos:
    ("pájaro símbolo nacional" → Quetzal). De cada artículo se toma el fragmento que mejor
    coincide.
 4. Ambas listas se combinan con *Reciprocal Rank Fusion*; si la búsqueda por palabras no encontró
-   fragmentos con todas las palabras, la semántica pesa más. Si las palabras clave son exactamente
-   el título de un artículo ("¿Qué es el oro?" → Oro), su introducción va primero.
-5. Los mejores fragmentos van al modelo de chat con la instrucción de responder solo con ellos y
+   fragmentos con todas las palabras, la semántica pesa más.
+5. **Artículos nombrados en la pregunta:** si un grupo de palabras con mayúscula es el título de un
+   artículo, o uno de sus nombres alternativos ("¿Qué civilización construyó **Tikal**?",
+   "¿Quién pintó la **Mona Lisa**?" → La Gioconda), o la pregunta entera lo es ("¿Qué es el oro?"),
+   la introducción de ese artículo va primero: en Wikipedia resume los datos clave, que la
+   búsqueda por fragmentos a veces no trae.
+6. Los mejores textos van al modelo de chat con la instrucción de responder solo con ellos y
    citar los artículos; la interfaz muestra las fuentes y sus imágenes.
+7. **Comprobación de citas:** si la respuesta solo cita artículos que el modelo no recibió (por
+   ejemplo "[Ulaanbaatar (Mongolía)]" cuando la wiki local no habla de Mongolia), casi seguro el
+   dato salió de su propia memoria: el chat lo avisa y no muestra imágenes. Tampoco las muestra
+   cuando la respuesta es "No encontré esa información en la wiki".
 
 ## Medir la calidad de las respuestas
 

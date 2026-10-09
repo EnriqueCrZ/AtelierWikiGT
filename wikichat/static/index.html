@@ -44,6 +44,8 @@
   .user { background:var(--user); margin-left:max(15%, calc((100% - 820px) / 2 + 15%)); }
   .bot { background:var(--panel); border:1px solid var(--border); }
   .src { font-size:13px; color:var(--muted); margin-top:8px; white-space:normal; }
+  .warn { font-size:13px; margin-top:8px; padding:6px 10px; border-radius:6px; white-space:normal;
+          background:color-mix(in srgb, #e0a800 14%, transparent); border:1px solid color-mix(in srgb, #e0a800 45%, transparent); }
   /* Mientras el modelo piensa */
   .thinking { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:14px; white-space:normal; }
   .dots { display:inline-flex; gap:4px; flex:none; }
@@ -205,7 +207,12 @@ async function openChat(id) {
   log.replaceChildren();
   if (!chat.messages.length) welcome();
   for (const m of chat.messages) {
-    const {el} = addMsg(m.role === 'user' ? 'user' : 'bot', m.content);
+    const i = m.role === 'user' ? -1 : m.content.lastIndexOf('\n\n⚠️ ');
+    const {el, body} = addMsg(m.role === 'user' ? 'user' : 'bot', i >= 0 ? m.content.slice(0, i) : m.content);
+    if (i >= 0) {
+      const w = document.createElement('div'); w.className = 'warn'; w.textContent = m.content.slice(i + 2);
+      el.insertBefore(w, body.nextSibling);
+    }
     if (m.role !== 'user') addSources(el, m.sources, m.images);
   }
   renderChats(); log.scrollTop = log.scrollHeight;
@@ -268,6 +275,12 @@ $('f').onsubmit = async (e) => {
           status.set(ev.model_loaded === false
             ? 'Cargando el modelo en memoria (puede tardar un poco la primera vez)…'
             : readingLabel(ev.sources));
+        }
+        if (ev.type === 'hide_images') el.querySelector('.pics')?.remove();
+        if (ev.type === 'warning') {
+          begin();
+          const w = document.createElement('div'); w.className = 'warn'; w.textContent = ev.text;
+          el.insertBefore(w, body.nextSibling);
         }
         if (ev.type === 'token') {
           begin();

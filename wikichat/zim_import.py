@@ -187,16 +187,43 @@ def _init_worker(path):
     _archive = Archive(path)
 
 
-def _process_range(bounds):
-    """Convierte las entradas [start, end) del .zim.
+def _redirect(entry):
+    """(clave del nombre alternativo, título del artículo destino), o None."""
+    if entry.path == "mainPage":  # entrada interna del .zim que apunta a la portada
+        return None
+    target = entry.get_redirect_entry()
+    if "#" in entry.title or "#" in target.title or entry.title == target.title:
+        return None
+    key = db.title_key(entry.title)
+    return (key, target.title) if key else None
 
-    Devuelve (end, [(título, texto, huella del texto, imágenes)])."""
+
+def _redirects_range(bounds):
+    """Solo las redirecciones de las entradas [start, end) (modo --solo-redirecciones)."""
     start, end = bounds
     out = []
     for i in range(start, end):
         try:
             entry = _archive._get_entry_by_id(i)
+            if entry.is_redirect and (r := _redirect(entry)):
+                out.append(r)
+        except Exception as e:
+            log.debug("entrada %d omitida: %s", i, e)
+    return end, out
+
+
+def _process_range(bounds):
+    """Convierte las entradas [start, end) del .zim.
+
+    Devuelve (end, [(título, texto, huella del texto, imágenes)], [redirecciones])."""
+    start, end = bounds
+    out, redirects = [], []
+    for i in range(start, end):
+        try:
+            entry = _archive._get_entry_by_id(i)
             if entry.is_redirect:
+                if r := _redirect(entry):
+                    redirects.append(r)
                 continue
             item = entry.get_item()
             if not item.mimetype.startswith("text/html"):
@@ -207,7 +234,7 @@ def _process_range(bounds):
             continue
         if len(text) >= 200 and "#" not in entry.title:  # descarta vacías y anclas
             out.append((entry.title, text, db.text_hash(text), [(f"zim:{p}", c) for p, c in images]))
-    return end, out
+    return end, out, redirects
 
 
 def zim_date(archive):
@@ -291,7 +318,10 @@ def import_zim(conn, path, workers=None):
     workers = workers or max(1, (os.cpu_count() or 2) - 1)
     t0 = time.time()
     with multiprocessing.Pool(workers, _init_worker, (path,)) as pool:
-        for end, pages in pool.imap(_process_range, ranges):
+        for end, pages, redirects in pool.imap(_process_range, ranges):
+            conn.executemany("INSERT INTO redirects (title_key, target, gen) VALUES (?, ?, ?)",
+                             [(key, target, gen) for key, target in redirects])
+            counts["redirecciones"] = counts.get("redirecciones", 0) + len(redirects)
             for title, text, digest, images in pages:
                 what = apply_article(conn, title, text, digest, images, snapshot, gen)
                 counts[what] = counts.get(what, 0) + 1
@@ -302,6 +332,7 @@ def import_zim(conn, path, workers=None):
             log.info("%.1f%% · %s · %.0f entradas/s", 100 * end / total, _fmt(counts), rate)
 
     counts["borrado"] = remove_missing(conn, gen, snapshot)
+    conn.execute("DELETE FROM redirects WHERE gen IS NULL OR gen < ?", (gen,))  # las del .zim anterior
     db.set_meta(conn, "zim_counts", json.dumps(counts), commit=False)
     db.set_meta(conn, "zim_date", day, commit=False)
 
@@ -325,6 +356,32 @@ def import_zim(conn, path, workers=None):
     return counts
 
 
+def import_redirects(conn, path, workers=None):
+    """Solo las redirecciones ("Mona Lisa" → "La Gioconda") de un .zim, sin tocar los
+    artículos: para copias importadas con versiones anteriores, que no las guardaban."""
+    try:
+        from libzim.reader import Archive
+    except ImportError:
+        raise SystemExit("Falta libzim: instala con  pip install libzim")
+    total = Archive(path).all_entry_count
+    gen = int(db.get_meta(conn, "zim_gen") or 1)
+    log.info("Leyendo las redirecciones de %s (%d entradas)…", os.path.basename(path), total)
+    conn.execute("DELETE FROM redirects")
+    ranges = [(i, min(i + BATCH * 5, total)) for i in range(0, total, BATCH * 5)]
+    workers = workers or max(1, (os.cpu_count() or 2) - 1)
+    found = 0
+    with multiprocessing.Pool(workers, _init_worker, (path,)) as pool:
+        for end, redirects in pool.imap(_redirects_range, ranges):
+            conn.executemany("INSERT INTO redirects (title_key, target, gen) VALUES (?, ?, ?)",
+                             [(key, target, gen) for key, target in redirects])
+            found += len(redirects)
+            if end == total or end % (BATCH * 250) == 0:
+                log.info("%.0f%% · %d redirecciones", 100 * end / total, found)
+    conn.commit()
+    log.info("Listo: %d redirecciones guardadas", found)
+    return found
+
+
 def _fmt(counts):
-    order = ("nuevo", "cambiado", "igual", "local más reciente", "borrado")
+    order = ("nuevo", "cambiado", "igual", "local más reciente", "borrado", "redirecciones")
     return ", ".join(f"{counts[k]} {k}" for k in order if counts.get(k)) or "sin artículos"

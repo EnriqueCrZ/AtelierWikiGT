@@ -22,23 +22,11 @@ import time
 import unicodedata
 
 from . import vectors
-from .llm import retrieve, stream_answer
-
-REFUSAL = re.compile(
-    r"no (lo )?(encontre|encuentro|tengo|hay|dispongo|puedo (responder|dar|proporcionar)|se (menciona|encuentra|especifica|indica|proporciona)"
-    r"|aparece|contiene|incluye|esta (disponible|en))"
-    r"|(fragmentos|wiki|informacion) (proporcionad[oa]s? )?no (contiene|incluye|menciona|tiene|dice|habla)"
-    r"|no cuento con|sin informacion|fuera del alcance|desconozco"
-)
-
+from .llm import citation_warning, refused, retrieve, stream_answer
 
 def norm(text):
     text = unicodedata.normalize("NFKD", text.lower())
     return "".join(c for c in text if not unicodedata.combining(c))
-
-
-def refused(answer):
-    return bool(REFUSAL.search(norm(answer)))
 
 
 def score(item, answer, source_titles):
@@ -47,7 +35,8 @@ def score(item, answer, source_titles):
               "habla_de_fragmentos": bool(re.search(
                   r"fragmento|\btextos? (de la wiki|proporcionad|del articulo)|segun (la wiki|los textos)"
                   r"|se deriva de los textos|que se me proporciona", a)),
-              "palabras": len(answer.split())}
+              "palabras": len(answer.split()),
+              "cita_inventada": bool(citation_warning(answer, [{"title": t} for t in source_titles]))}
     leaked = any(re.search(p, a) for p in item.get("no_debe_decir", []))
     if item.get("sin_respuesta"):
         result["inventa"] = leaked or not result["se_niega"]
@@ -124,6 +113,7 @@ def summarize(results):
         "se_niega_de_mas": sum(r["se_niega_de_mas"] for r in answerable),
         "cita_pct": pct([r["cita"] for r in answerable]),
         "habla_de_fragmentos_pct": pct([r["habla_de_fragmentos"] for r in results]),
+        "citas_inventadas": sum(r.get("cita_inventada", False) for r in results),
         "palabras_promedio": round(sum(r["palabras"] for r in answerable) / len(answerable)) if answerable else None,
         "segundos_promedio": round(sum(r["total_s"] for r in results) / len(results), 1) if results else None,
     }
@@ -140,4 +130,5 @@ def format_summary(s):
             f"  habla de «fragmentos»: {s['habla_de_fragmentos_pct']}%  ·  "
             f"{s['palabras_promedio']} palabras por respuesta\n"
             f"  inventó en {s['inventa']}  ·  se negó de más en {s['se_niega_de_mas']}  ·  "
+            f"citó artículos que no recibió en {s['citas_inventadas']}  ·  "
             f"{s['segundos_promedio']} s por pregunta")

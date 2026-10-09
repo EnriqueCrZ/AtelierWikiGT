@@ -18,8 +18,17 @@ CREATE TABLE IF NOT EXISTS pages (
     snapshot_ts REAL,       -- fecha del contenido guardado (fecha del .zim o de descarga)
     size INTEGER,           -- largo del texto; los artículos largos se vectorizan primero
     hash TEXT,              -- huella del texto: al importar otro .zim, si no cambió se conserva
-    gen INTEGER             -- en qué importación de .zim se vio por última vez
+    gen INTEGER,            -- en qué importación de .zim se vio por última vez
+    title_key TEXT          -- título normalizado ("Lago de Atitlán" → "lago atitlan")
 );
+CREATE INDEX IF NOT EXISTS pages_title_key ON pages(title_key);
+-- Otros nombres de un artículo (redirecciones del .zim): "Mona Lisa" → "La Gioconda".
+CREATE TABLE IF NOT EXISTS redirects (
+    title_key TEXT NOT NULL,
+    target TEXT NOT NULL,
+    gen INTEGER
+);
+CREATE INDEX IF NOT EXISTS redirects_key ON redirects(title_key);
 CREATE INDEX IF NOT EXISTS pages_size ON pages(size DESC);
 CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY,
@@ -71,7 +80,7 @@ SKIP_SECTIONS = {
 
 
 # Columnas añadidas después de la primera versión: se agregan a bases ya existentes.
-MIGRATIONS = {"pages": {"size": "INTEGER", "hash": "TEXT", "gen": "INTEGER"},
+MIGRATIONS = {"pages": {"size": "INTEGER", "hash": "TEXT", "gen": "INTEGER", "title_key": "TEXT"},
               "images": {"vec": "BLOB"}}
 
 
@@ -97,12 +106,24 @@ def _migrate(conn):
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
-        for table, col, kind in missing():  # se vuelve a mirar: otra conexión pudo adelantarse
+        added = missing()  # se vuelve a mirar: otra conexión pudo adelantarse
+        for table, col, kind in added:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+        if ("pages", "title_key", "TEXT") in added:
+            # Una sola vez en bases anteriores (con toda la Wikipedia tarda alrededor de un minuto).
+            conn.create_function("tkey", 1, title_key, deterministic=True)
+            conn.execute("UPDATE pages SET title_key = tkey(title)")
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
+
+
+def title_key(title):
+    """Título normalizado para compararlo con lo que se pregunta: sin mayúsculas, acentos ni
+    palabras vacías ("Lago de Atitlán" → "lago atitlan")."""
+    from .retrieval import keywords
+    return " ".join(keywords(title or ""))
 
 
 def text_hash(text):
@@ -185,8 +206,10 @@ def upsert_page(conn, title, revid, text, snapshot_ts=None, images=None, commit=
             gen = row[0] if row else None
         _remove(conn, old, keep_images=images is None)
     cur = conn.execute(
-        "INSERT INTO pages (title, revid, snapshot_ts, size, hash, gen) VALUES (?, ?, ?, ?, ?, ?)",
-        (title, revid, snapshot_ts or time.time(), len(text), hash or text_hash(text), gen),
+        "INSERT INTO pages (title, revid, snapshot_ts, size, hash, gen, title_key) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (title, revid, snapshot_ts or time.time(), len(text), hash or text_hash(text), gen,
+         title_key(title)),
     )
     new = cur.lastrowid
     conn.executemany(
@@ -240,4 +263,5 @@ def stats(conn):
         "catchup_pending": get_meta(conn, "check_after") is not None,
         "embedded_pages": conn.execute("SELECT COUNT(*) FROM page_vectors").fetchone()[0],
         "images": conn.execute("SELECT MAX(id) FROM images").fetchone()[0] or 0,
+        "redirects": conn.execute("SELECT COUNT(*) FROM redirects").fetchone()[0],
     }

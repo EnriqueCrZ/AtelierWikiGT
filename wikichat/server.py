@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import backends, chats, db, images, sync, vectors
-from .llm import retrieve_for, stream_answer, summarize
+from .llm import citation_warning, refused, retrieve_for, stream_answer, summarize
 
 log = logging.getLogger("wikichat.server")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -236,6 +236,15 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
                 for text in stream_answer(cfg, messages, sources, summary):
                     answer.append(text)
                     send({"type": "token", "text": text})
+                text = "".join(answer)
+                warning = citation_warning(text, sources)
+                if warning:
+                    answer.append("\n\n" + warning)
+                    send({"type": "warning", "text": warning})
+                # Si no respondió con la wiki, las imágenes de las "fuentes" no vienen al caso.
+                if warning or refused(text):
+                    pics = []
+                    send({"type": "hide_images"})
                 send({"type": "done"})
             except (BrokenPipeError, ConnectionResetError):
                 answer.append(" [respuesta interrumpida]")

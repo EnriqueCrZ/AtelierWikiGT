@@ -82,21 +82,58 @@ def best_chunk(conn, page, terms):
     return _row(row) if row else None
 
 
-def exact_title_intro(conn, terms):
-    """Introducción del artículo cuyo título son exactamente las palabras clave
-    ("¿Qué es el oro?" → Oro, "tabla periódica de los elementos" → ese artículo)."""
-    if not terms or len(terms) > 6:
-        return None
-    wanted = set(terms)
-    rows = conn.execute(
-        """SELECT DISTINCT c.page, c.title FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
-           WHERE chunks_fts MATCH ? LIMIT 200""",
-        ("title : (" + " AND ".join(f'"{t}"' for t in terms) + ")",),
-    ).fetchall()
-    for page, title in rows:
-        if set(keywords(title)) == wanted:
-            return best_chunk(conn, page, [])
-    return None
+def query_terms(query):
+    """Palabras clave en orden, marcando las que van con mayúscula sin ser la primera palabra
+    de la pregunta (suelen ser nombres propios: Tikal, Popol Vuh, Guatemala)."""
+    out, seen = [], set()
+    for i, w in enumerate(re.findall(r"\w+", query, re.UNICODE)):
+        n = _normalize(w)
+        if len(n) > 1 and n not in STOPWORDS and n not in seen:
+            seen.add(n)
+            out.append((n, i > 0 and w[0].isupper()))
+    return out
+
+
+def entity_intros(conn, query, max_pages=2, max_words=4):
+    """Introducciones de los artículos de los que habla la pregunta.
+
+    Busca artículos (o redirecciones, como "Mona Lisa" → "La Gioconda") cuyo título coincide
+    con un grupo de palabras seguidas de la pregunta que empieza con mayúscula, o con la
+    pregunta entera ("¿Qué es el oro?" → Oro). La introducción de un artículo de Wikipedia
+    resume sus datos clave, que la búsqueda por fragmentos a veces no trae.
+    """
+    terms = query_terms(query)
+    words = [t for t, _ in terms]
+    grams = []
+    for size in range(min(max_words, len(words)), 0, -1):
+        for start in range(len(words) - size + 1):
+            if size == len(words) or terms[start][1]:
+                grams.append((" ".join(words[start:start + size]), start, size))
+    if not grams:
+        return []
+    keys = list({g for g, _, _ in grams})
+    marks = ",".join("?" * len(keys))
+    found = {}
+    for key, pid in conn.execute(
+            f"SELECT r.title_key, p.id FROM redirects r JOIN pages p ON p.title = r.target "
+            f"WHERE r.title_key IN ({marks})", keys):
+        found.setdefault(key, pid)
+    for key, pid in conn.execute(f"SELECT title_key, id FROM pages WHERE title_key IN ({marks})", keys):
+        found[key] = pid  # un artículo con ese título exacto tiene prioridad sobre una redirección
+
+    intros, used, pages = [], set(), set()
+    for gram, start, size in grams:  # de los grupos más largos a los más cortos
+        span = set(range(start, start + size))
+        if gram not in found or span & used or found[gram] in pages:
+            continue
+        chunk = best_chunk(conn, found[gram], [])
+        if chunk:
+            intros.append(chunk)
+            used |= span
+            pages.add(found[gram])
+        if len(intros) == max_pages:
+            break
+    return intros
 
 
 def _diverse(chunks, k):
@@ -121,10 +158,10 @@ def search(conn, query, k=6, semantic_pages=None):
     """
     terms = keywords(query)
     keyword, strict = keyword_search(conn, terms, k * 3) if terms else ([], True)
-    exact = exact_title_intro(conn, terms)
-    first = [exact] if exact else []
+    first = entity_intros(conn, query)
+    firsts = {c["id"] for c in first}
     if not semantic_pages:
-        return _diverse(first + [c for c in keyword if not exact or c["id"] != exact["id"]], k)
+        return _diverse(first + [c for c in keyword if c["id"] not in firsts], k)
 
     # Si no hubo fragmentos con todas las palabras, la evidencia por palabras es débil
     # (preguntas en lenguaje natural): la búsqueda semántica pesa más.
@@ -139,4 +176,4 @@ def search(conn, query, k=6, semantic_pages=None):
             rrf[c["id"]] = rrf.get(c["id"], 0) + 1 / (RRF_K + rank)
             chunks[c["id"]] = c
     ranked = sorted(chunks.values(), key=lambda c: -rrf[c["id"]])
-    return _diverse(first + [c for c in ranked if not exact or c["id"] != exact["id"]], k)
+    return _diverse(first + [c for c in ranked if c["id"] not in firsts], k)

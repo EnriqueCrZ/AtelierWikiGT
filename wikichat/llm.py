@@ -1,6 +1,7 @@
 """Respuestas con recuperación (RAG): busca fragmentos en la copia local y se los da al
 modelo de chat local para que redacte la respuesta."""
 import logging
+import re
 
 from . import backends, vectors
 from .retrieval import search
@@ -29,6 +30,50 @@ def build_context(sources):
         f"Artículo: {s['title']}" + (f" (sección «{s['section']}»)" if s["section"] != "Introducción" else "")
         + f"\n{s['text']}" for s in sources
     ) or "(no se encontró ningún texto relacionado)"
+
+
+CITATION = re.compile(r"\[([^\[\]]{2,120})\]")
+
+
+def unsupported_citations(answer, sources):
+    """Artículos citados entre corchetes que no estaban entre las fuentes. Si una respuesta
+    solo cita artículos que el modelo no recibió, casi seguro sacó el dato de su propia
+    memoria (p. ej. "[Ulaanbaatar (Mongolía)]" cuando la wiki local no habla de Mongolia)."""
+    from .retrieval import keywords
+    known = [set(keywords(s["title"])) for s in sources]
+    out = []
+    for cited in CITATION.findall(answer):
+        title = re.sub(r"\s*\(secci[oó]n[^)]*\)\s*$", "", cited).strip()  # [Tornasol (sección «…»)]
+        words = set(keywords(title))
+        # Vale si sus palabras están en el título de alguna fuente, o al revés: "[Mercurio]"
+        # cuando la fuente era "Ciclo del mercurio", o "[Tornasol]" por "Tornasol (química)".
+        if words and not any(words <= k or k <= words for k in known if k):
+            out.append(title)
+    return out
+
+
+REFUSAL = re.compile(
+    r"no (lo )?(encontre|encuentro|tengo|hay|dispongo|puedo (responder|dar|proporcionar)|se (menciona|encuentra|especifica|indica|proporciona)"
+    r"|aparece|contiene|incluye|esta (disponible|en))"
+    r"|(fragmentos|wiki|informacion) (proporcionad[oa]s? )?no (contiene|incluye|menciona|tiene|dice|habla)"
+    r"|no cuento con|sin informacion|fuera del alcance|desconozco"
+)
+
+
+def refused(answer):
+    """True si la respuesta dice que no encontró la información."""
+    from .retrieval import _normalize
+    return bool(REFUSAL.search(" ".join(_normalize(w) for w in answer.split())))
+
+
+def citation_warning(answer, sources):
+    """Texto de aviso si todas las citas de la respuesta son de artículos no consultados."""
+    cited = CITATION.findall(answer)
+    bad = unsupported_citations(answer, sources)
+    if cited and len(bad) == len(cited):
+        return ("⚠️ Esta respuesta cita artículos que no estaban entre las fuentes consultadas ("
+                + ", ".join(dict.fromkeys(bad)) + "): puede no venir de la wiki.")
+    return None
 
 
 def query_vector(cfg, query):
