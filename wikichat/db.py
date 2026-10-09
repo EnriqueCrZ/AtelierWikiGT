@@ -80,14 +80,29 @@ def connect(path):
     conn = sqlite3.connect(path, check_same_thread=False, timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    for table, columns in MIGRATIONS.items():
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone()
-        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        for col, kind in columns.items():
-            if exists and col not in have:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+    _migrate(conn)
     conn.executescript(SCHEMA)
     return conn
+
+
+def _migrate(conn):
+    """Agrega las columnas nuevas a bases creadas con versiones anteriores. Va dentro de una
+    transacción exclusiva: al arrancar `serve` se abren varias conexiones a la vez y, sin ella,
+    dos podían intentar agregar la misma columna ("duplicate column name")."""
+    missing = lambda: [(t, c, k) for t, cols in MIGRATIONS.items()
+                       if conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (t,)).fetchone()
+                       for c, k in cols.items()
+                       if c not in {r[1] for r in conn.execute(f"PRAGMA table_info({t})")}]
+    if not missing():
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table, col, kind in missing():  # se vuelve a mirar: otra conexión pudo adelantarse
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def text_hash(text):

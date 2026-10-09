@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -74,6 +75,30 @@ class WikiChatTest(unittest.TestCase):
                         seed_categories=["Guatemala"], llm_url="http://127.0.0.1:9")
         self.conn = db.connect(self.cfg["db_path"])
         self.wiki = FakeWiki()
+
+    def test_migration_is_safe_with_concurrent_connections(self):
+        # Base "vieja" sin las columnas nuevas, abierta a la vez por varios hilos (como serve).
+        path = os.path.join(self.tmp, "vieja.db")
+        old = sqlite3.connect(path)
+        old.executescript("CREATE TABLE pages (id INTEGER PRIMARY KEY, title TEXT UNIQUE, revid INTEGER, snapshot_ts REAL);"
+                          "CREATE TABLE images (id INTEGER PRIMARY KEY, page INTEGER, src TEXT, caption TEXT, mime TEXT, data BLOB);")
+        old.close()
+        errors = []
+
+        def open_db():
+            try:
+                db.connect(path)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=open_db) for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(errors, [])
+        cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(images)")}
+        self.assertIn("vec", cols)
 
     def test_chunk_by_sections_skips_references(self):
         chunks = db.chunk_text("Intro.\n== Historia ==\nTexto histórico.\n== Referencias ==\nCita 1.")
