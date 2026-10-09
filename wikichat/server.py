@@ -267,12 +267,13 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
                     pics = []
                     send({"type": "hide_images"})
                 else:
-                    # Solo las imágenes de los artículos que la respuesta cita: las demás
-                    # fuentes fueron candidatas de la búsqueda, no necesariamente relevantes.
+                    # Solo las fuentes e imágenes de los artículos que la respuesta cita: los
+                    # demás fueron candidatos de la búsqueda, no necesariamente relevantes.
                     cited = cited_titles(text, sources)
-                    if cited and any(p["title"] not in cited for p in pics):
+                    if cited and any(b["title"] not in cited for b in brief):
+                        brief = [b for b in brief if b["title"] in cited]
                         pics = [p for p in pics if p["title"] in cited]
-                        send({"type": "keep_images", "titles": sorted(cited)})
+                        send({"type": "cited", "titles": sorted(cited)})
                 send({"type": "done"})
             except (BrokenPipeError, ConnectionResetError):
                 answer.append(" [respuesta interrumpida]")

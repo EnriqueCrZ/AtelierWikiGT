@@ -277,7 +277,9 @@ $('f').onsubmit = async (e) => {
             : readingLabel(ev.sources));
         }
         if (ev.type === 'hide_images') el.querySelector('.pics')?.remove();
-        if (ev.type === 'keep_images') {
+        if (ev.type === 'cited') {
+          const src = el.querySelector('.src');
+          if (src) src.textContent = 'Fuentes: ' + ev.titles.join(', ');
           el.querySelectorAll('.pics figure').forEach(f => { if (!ev.titles.includes(f.title)) f.remove(); });
           if (!el.querySelector('.pics figure')) el.querySelector('.pics')?.remove();
         }
