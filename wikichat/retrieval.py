@@ -8,7 +8,7 @@ cuando cuanto de del desde donde dos el ella ellas ellos en entre era eran es es
 esta estaba estan estas este esto estos fue fueron ha habia han hay hasta la las le les lo los mas me
 mi muy nada ni no nos o otra otro para pero poco por porque que quien quienes se sea segun ser si sin
 sobre son su sus tambien tan te tiene tienen todo todos tu un una uno unos y ya yo dime cuentame
-explica explicame sabes saber quiero puedes hablame acerca informacion the of and is what who
+explica explicame explicamelo explicamela dimelo sabes saber quiero puedes hablame acerca informacion the of and is what who
 """.split())
 
 

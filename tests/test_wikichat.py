@@ -571,9 +571,27 @@ class ChatServerTest(unittest.TestCase):
 
     def test_followup_rewrite_uses_model_when_enabled(self):
         chat_id = self.ask("¿Qué es Tikal?")[0]["id"]
-        self.assertEqual(self.ask("¿y dónde?", chat_id)[1]["query"], "¿Qué es Tikal? ¿y dónde?")
+        self.assertEqual(self.ask("¿y dónde?", chat_id)[1]["query"], "¿Qué es Tikal? ¿y dónde? Hola mundo")
         self.cfg["rewrite_followups"] = True
         self.assertEqual(self.ask("¿y dónde?", chat_id)[1]["query"], "Hola mundo")
+
+    def test_followup_query_uses_previous_answer_and_anaphora(self):
+        from wikichat import llm
+        msgs = [{"role": "user", "content": "que es el iusi, no es una persona"},
+                {"role": "assistant", "content": "El IUSI es un impuesto único sobre inmuebles [Impuesto]. Se paga al año."},
+                {"role": "user", "content": "y como funciona ese iusi explicamelo"}]
+        q = llm.followup_query(msgs, msgs[-1]["content"])
+        self.assertIn("impuesto único sobre inmuebles", q)
+        self.assertNotIn("[", q)
+        long = "Cuéntame detalladamente cómo se calcula la tasa del impuesto en cada municipio"
+        self.assertEqual(llm.followup_query(msgs[:2] + [{"role": "user", "content": long}], long), long)
+
+    def test_cited_titles(self):
+        from wikichat import llm
+        src = [{"title": "Universidad Católica Santa Rosa"}, {"title": "Internet de las cosas"}]
+        self.assertEqual(llm.cited_titles("Es una universidad [Universidad Católica Santa Rosa].", src),
+                         {"Universidad Católica Santa Rosa"})
+        self.assertEqual(llm.cited_titles("Sin citas.", src), set())
 
     def test_invalid_requests(self):
         self.assertEqual(self.call("POST", "/api/chat", {"message": "  "})[0], 400)

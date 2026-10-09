@@ -8,7 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import backends, chats, db, images, sync, vectors
-from .llm import citation_warning, refused, retrieve_for, stream_answer, summarize
+from .llm import cited_titles, citation_warning, refused, retrieve_for, stream_answer, summarize
 
 log = logging.getLogger("wikichat.server")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -266,6 +266,13 @@ def make_handler(cfg, db_lock, index=None, activity=None, store=None):
                 if warning or refused(text):
                     pics = []
                     send({"type": "hide_images"})
+                else:
+                    # Solo las imágenes de los artículos que la respuesta cita: las demás
+                    # fuentes fueron candidatas de la búsqueda, no necesariamente relevantes.
+                    cited = cited_titles(text, sources)
+                    if cited and any(p["title"] not in cited for p in pics):
+                        pics = [p for p in pics if p["title"] in cited]
+                        send({"type": "keep_images", "titles": sorted(cited)})
                 send({"type": "done"})
             except (BrokenPipeError, ConnectionResetError):
                 answer.append(" [respuesta interrumpida]")

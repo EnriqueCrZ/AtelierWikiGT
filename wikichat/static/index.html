@@ -277,6 +277,10 @@ $('f').onsubmit = async (e) => {
             : readingLabel(ev.sources));
         }
         if (ev.type === 'hide_images') el.querySelector('.pics')?.remove();
+        if (ev.type === 'keep_images') {
+          el.querySelectorAll('.pics figure').forEach(f => { if (!ev.titles.includes(f.title)) f.remove(); });
+          if (!el.querySelector('.pics figure')) el.querySelector('.pics')?.remove();
+        }
         if (ev.type === 'warning') {
           begin();
           const w = document.createElement('div'); w.className = 'warn'; w.textContent = ev.text;

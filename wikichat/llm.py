@@ -40,16 +40,26 @@ def unsupported_citations(answer, sources):
     solo cita artículos que el modelo no recibió, casi seguro sacó el dato de su propia
     memoria (p. ej. "[Ulaanbaatar (Mongolía)]" cuando la wiki local no habla de Mongolia)."""
     from .retrieval import keywords
-    known = [set(keywords(s["title"])) for s in sources]
+    return [title for title, matched in _citations(answer, sources) if keywords(title) and not matched]
+
+
+def _citations(answer, sources):
+    """[(artículo citado, títulos de fuentes con los que coincide)] de cada cita entre corchetes."""
+    from .retrieval import keywords
+    known = [(s["title"], set(keywords(s["title"]))) for s in sources]
     out = []
     for cited in CITATION.findall(answer):
         title = re.sub(r"\s*\(secci[oó]n[^)]*\)\s*$", "", cited).strip()  # [Tornasol (sección «…»)]
         words = set(keywords(title))
         # Vale si sus palabras están en el título de alguna fuente, o al revés: "[Mercurio]"
         # cuando la fuente era "Ciclo del mercurio", o "[Tornasol]" por "Tornasol (química)".
-        if words and not any(words <= k or k <= words for k in known if k):
-            out.append(title)
+        out.append((title, [t for t, k in known if k and words and (words <= k or k <= words)]))
     return out
+
+
+def cited_titles(answer, sources):
+    """Títulos de las fuentes que la respuesta cita. Vacío si no cita ninguna (o ninguna coincide)."""
+    return {t for _, matched in _citations(answer, sources) for t in matched}
 
 
 REFUSAL = re.compile(
@@ -138,9 +148,28 @@ def search_query(cfg, messages, summary=None):
                 return rewritten[0].strip().strip('"«»')
         except backends.BackendUnavailable as e:
             log.warning("No se pudo reescribir la pregunta: %s", e)
-    if len(question.split()) < 6:
-        return users[-2] + " " + question
-    return question
+    return followup_query(messages, question)
+
+
+ANAPHORA = {"ese", "esa", "eso", "esos", "esas", "aquel", "aquella", "aquello", "mismo", "misma"}
+
+
+def followup_query(messages, question):
+    """Consulta para una pregunta de seguimiento sin reescribirla con el modelo: la pregunta
+    corta o con referencias ("ese iusi", "y cuándo") se completa con la pregunta anterior y la
+    primera oración de la última respuesta, que dice de qué se hablaba (p. ej. que el IUSI
+    es un impuesto y no una universidad)."""
+    from .retrieval import _normalize
+    words = {_normalize(w) for w in re.findall(r"\w+", question)}
+    if len(question.split()) >= 8 and not words & ANAPHORA:
+        return question
+    users = [m["content"] for m in messages if m["role"] == "user"]
+    query = users[-2] + " " + question
+    answers = [m["content"] for m in messages[:-1] if m["role"] == "assistant"]
+    if answers and not refused(answers[-1]):
+        first = re.split(r"(?<=[.!?])\s", CITATION.sub("", answers[-1]).strip(), maxsplit=1)[0]
+        query += " " + first[:200]
+    return query
 
 
 def summarize(cfg, old_summary, messages):
