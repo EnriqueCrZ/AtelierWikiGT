@@ -296,6 +296,15 @@ class SemanticAndImagesTest(unittest.TestCase):
         self.assertEqual(intros("¿Quién pintó la Mona Lisa?"), ["La Gioconda"])  # por redirección
         self.assertEqual(intros("¿Qué es la civilización?"), ["Civilización"])  # la pregunta entera
         self.assertEqual(retrieve(self.conn, self.cfg, "¿Quién pintó la Mona Lisa?")[0]["title"], "La Gioconda")
+        # "Todos (Guatemala)" tiene la misma clave que "Guatemala" ("todos" es palabra vacía):
+        # gana el que coincide sin el paréntesis, aunque sea más corto o se haya importado después.
+        db.upsert_page(self.conn, "Todos (Guatemala)", None, "Todos es un partido político. " * 40)
+        db.upsert_page(self.conn, "Guatemala", None, "Guatemala es un país; su capital es la Ciudad de Guatemala.")
+        db.upsert_page(self.conn, "Mercurio (planeta)", None, "Planeta. " * 50)
+        db.upsert_page(self.conn, "Mercurio (elemento)", None, "Elemento químico. " * 90)
+        self.conn.execute("INSERT INTO redirects (title_key, target) VALUES ('mercurio', 'Mercurio (elemento)')")
+        self.assertEqual(intros("¿Cuál es la capital de Guatemala?"), ["Guatemala"])
+        self.assertEqual(intros("¿Qué es el Mercurio?"), ["Mercurio (elemento)"])
 
     def test_without_embedding_model_falls_back_to_keywords(self):
         index = vectors.VectorIndex(8)

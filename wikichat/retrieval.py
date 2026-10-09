@@ -94,6 +94,11 @@ def query_terms(query):
     return out
 
 
+def _title_base_key(title):
+    """Clave del título sin la aclaración entre paréntesis: "Todos (Guatemala)" → "" ."""
+    return " ".join(keywords(re.sub(r"\s*\([^)]*\)\s*$", "", title)))
+
+
 def entity_intros(conn, query, max_pages=2, max_words=4):
     """Introducciones de los artículos de los que habla la pregunta.
 
@@ -113,13 +118,22 @@ def entity_intros(conn, query, max_pages=2, max_words=4):
         return []
     keys = list({g for g, _, _ in grams})
     marks = ",".join("?" * len(keys))
-    found = {}
-    for key, pid in conn.execute(
-            f"SELECT r.title_key, p.id FROM redirects r JOIN pages p ON p.title = r.target "
+    # Varios artículos pueden compartir clave ("Guatemala" y "Todos (Guatemala)", porque "todos"
+    # es palabra vacía). Se prefiere: título propio antes que redirección, el que coincide sin
+    # contar lo que va entre paréntesis, y el más extenso (suele ser el principal).
+    candidates = {}
+    for key, pid, title, size in conn.execute(
+            f"SELECT title_key, id, title, size FROM pages WHERE title_key IN ({marks})", keys):
+        candidates.setdefault(key, []).append((0, pid, title, size))
+    for key, pid, title, size in conn.execute(
+            f"SELECT r.title_key, p.id, p.title, p.size FROM redirects r JOIN pages p ON p.title = r.target "
             f"WHERE r.title_key IN ({marks})", keys):
-        found.setdefault(key, pid)
-    for key, pid in conn.execute(f"SELECT title_key, id FROM pages WHERE title_key IN ({marks})", keys):
-        found[key] = pid  # un artículo con ese título exacto tiene prioridad sobre una redirección
+        candidates.setdefault(key, []).append((1, pid, title, size))
+    found = {}
+    for key, options in candidates.items():
+        base_matches = lambda title: _title_base_key(title) == key
+        best = min(options, key=lambda o: (o[0], not base_matches(o[2]), -(o[3] or 0)))
+        found[key] = best[1]
 
     intros, used, pages = [], set(), set()
     for gram, start, size in grams:  # de los grupos más largos a los más cortos
